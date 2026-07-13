@@ -20,10 +20,15 @@ Grab/Sources/
                               the private LogView helper view.
   AppViewModel.swift         @MainActor ObservableObject orchestrating
                               fetch -> download -> convert. Owns the log
-                              buffer, a single ProcessRunner instance,
-                              progress state, the detected-color-info
-                              published for the UI badge, and lastOutputURL
-                              (drives the "Reveal in Finder" button).
+                              buffer (a LogBuffer, not a raw String — see
+                              "Log buffer capping/throttling" below), a
+                              single ProcessRunner instance, progress state,
+                              the detected-color-info published for the UI
+                              badge, lastOutputURL (drives the "Reveal in
+                              Finder" button), and diskSpaceWarning (drives
+                              the pre-flight low-disk-space Continue/Cancel
+                              alert — see "Retry safety / disk-space
+                              handling" below).
   YTDLPService.swift          -F table parser, download arg builder,
                               after_move output-path extraction, download
                               progress-line parser, failure classification
@@ -35,7 +40,9 @@ Grab/Sources/
                               chain), duration probe + time=/speed=
                               progress-line parsers, ETA formatter,
                               hardware/software encoder selection for both
-                              conversion modes
+                              conversion modes, video-dimensions probe +
+                              estimateOutputBytes (pre-flight disk-space
+                              estimate — see below)
   ProcessRunner.swift         Process wrapper: async/await, streaming
                               stdout+stderr, cancellation, PATH injection,
                               final-drain-on-exit (see gotcha below)
@@ -47,7 +54,23 @@ Grab/Sources/
   Models.swift                 VideoFormat (+ resolutionPixels/Height),
                               ProResTier, ConversionMode, H264Quality,
                               GrabError, CookieBrowser, ActionableAlert
-                              (+ its .make(for:) factory)
+                              (+ its .make(for:) factory), SystemFailureKind
+                              (fatal-vs-transient failure classification
+                              shared by yt-dlp/ffmpeg — see "Retry safety"
+                              below), DiskSpaceWarning
+  LogBuffer.swift               pure-Swift (no SwiftUI/Foundation-adjacent
+                              deps beyond Foundation itself), line-oriented,
+                              capped + frame=-collapsing log buffer — see
+                              "Log buffer capping/throttling" below.
+                              Harness-testable like YTDLPService/
+                              FFmpegService (zero SwiftUI imports).
+  DiskSpaceService.swift        free-space lookup (volumeAvailableCapacity
+                              ForImportantUsage) + ByteCountFormatter
+                              wrapper, used by both the pre-flight warning
+                              and the post-hoc disk-full alert. Plain
+                              FileManager/URL logic, no subprocess — kept
+                              out of FFmpegService for that reason. Also
+                              harness-testable.
   NotificationService.swift    UNUserNotificationCenter wrapper — posts a
                               local notification on job completion, with a
                               "Reveal in Finder" notification action (needs
@@ -943,6 +966,177 @@ itself commented out for that one test build, same reason as the
 dependency-sheet mocking earlier: the real check is a `Task` that isn't
 awaited, so without disabling it, it can complete *after* the injected
 mock and silently overwrite it.
+
+## Log buffer capping/throttling (fixing "log breaks the UI")
+
+**Bug**: opening the "Show details" disclosure mid-job used to make the log
+pane consume the entire window, pushing the rest of the UI out of reach
+with no way to scroll back to it. Root cause was the exact same SwiftUI
+quirk already documented in "Window sizing (round 3)" above for the
+formats `Table`: `LogView`'s `ScrollView` had `.frame(minHeight: 160)`
+with **no `maxHeight`**, so during the window's ideal-size computation
+SwiftUI just measured the full content height (ffmpeg emits a `frame=...`
+status line per progress tick — thousands of lines on a long encode) and
+sized the window to fit all of it. Fix is the same pattern as before: a
+real, finite `maxHeight` — `LogView(...).frame(minHeight: 160, maxHeight:
+320)` in `ContentView.statusSection`. If you ever see a SwiftUI view
+"take over" a window regardless of its content, check for a missing
+`maxHeight` before assuming it's a new bug — this is the second time this
+exact shape of issue has hit this codebase.
+
+**Buffer capping + progress-line collapsing** (`LogBuffer.swift`, new this
+session): `AppViewModel` used to hold `log` as a plain `String`, appended
+to directly and capped only by total character count (200_000). Replaced
+with `LogBuffer`, a pure-Swift (Foundation-only, no SwiftUI) line-oriented
+buffer:
+- Caps at 500 *complete lines* (oldest dropped first), not characters —
+  a long ffmpeg encode could still produce hundreds of thousands of
+  characters within 500 lines' worth of frame-progress spam, so a char
+  cap alone doesn't bound line count the way the UI needs.
+- Collapses consecutive `frame=...`-prefixed lines (ffmpeg's periodic
+  status line) into a single overwritten "current progress" line instead
+  of appending each one as a new row — this alone eliminates the vast
+  majority of log volume on a real encode.
+- Handles partial lines correctly: `Pipe.readabilityHandler` delivers
+  arbitrary byte chunks, not line-buffered text, so a single line can
+  arrive split across two `feed()` calls. `LogBuffer` holds the trailing
+  incomplete segment in `partialLine` and only applies capping/collapsing
+  once a `\n` completes it; `.text` still includes the live partial line
+  so nothing is hidden while streaming.
+- Harness-tested (see "The actually-useful verification method" above):
+  3000 synthetic `frame=` lines collapse to exactly one line, 10,000
+  plain lines cap at the newest 500, and a line deliberately split across
+  two `feed()` calls reassembles correctly.
+
+**Throttled `@Published log`** (`AppViewModel.appendLog`/
+`scheduleLogFlush`): `appendLog` feeds `LogBuffer` immediately but only
+republishes the `@Published log` string (which triggers `LogView`'s
+`Text` to re-render) on a leading-edge-then-periodic basis — at most once
+per 150ms while chunks keep arriving, via a `Task { @MainActor in ...
+Task.sleep(150ms) ... }` guarded by a `logFlushPending` bool so overlapping
+schedules can't stack up. Previously every single pipe chunk triggered a
+full SwiftUI re-render of the log `Text` view, even though most of that
+volume was the same repeated `frame=` line. `flushLogNow()` (called right
+before `isFetchingFormats`/`isRunning` flip back to false) forces an
+immediate flush so the final log state appears exactly when the
+progress/spinner disappears, rather than up to 150ms later.
+
+**Verified visually**: injected 3000 synthetic `frame=...` lines directly
+into `viewModel.log` (bypassing `LogBuffer` on purpose, to reproduce the
+pre-fix "raw high-volume log" shape) via the same temporary
+mock-injection-in-`.task` pattern used elsewhere in this file, with the
+disclosure forced open and a fake in-progress conversion state. Queried
+real window bounds via `Quartz.CGWindowListCopyWindowInfo` (same method
+as the round-3 window-sizing work) — 1202×1140, a sane bounded size, with
+the log confined to its own scrollable pane and the toolbar/Download/
+Output/Conversion sections/progress bar all simultaneously visible above
+it. Reverted the injection before considering the work done.
+
+## Retry safety / disk-space handling (fixing the disk-full retry issue)
+
+**`SystemFailureKind`** (`Models.swift`, new this session): recognizes
+OS-level fatal failures — disk-full (`"no space left on device"`),
+permission-denied (`"permission denied"`), missing-binary (`"required
+tool not found"` / `"failed to launch"`, matching `ProcessRunner`'s own
+error-message wording), and invalid/corrupt input (`"invalid data found
+when processing input"`, `"moov atom not found"`, `"could not find codec
+parameters"`) — by plain substring matching against lowercased process
+output. Deliberately shared between yt-dlp and ffmpeg failure text rather
+than living in `YTDLPService`/`FFmpegService` separately: both are just
+processes hitting the same OS `write()` errors on macOS, so the same
+patterns apply to either one's stderr. `.none` means "not recognized as
+one of these" — callers fall back to their own finer-grained
+classification for transient cases (`YTDLPService.classifyFailure`'s
+`.forbidden403`, the only kind that was ever auto-retried).
+
+**Both existing auto-retry loops are now gated on
+`!SystemFailureKind.classify(...).isFatal`, and both are hard-capped at
+`AppViewModel.maxAttemptsPerPhase` (= 2) attempts total, expressed as an
+explicit bounded loop/counter rather than an unbounded `if`-triggered
+retry**:
+- The HTTP-403 download retry (`runDownloadAndConvert`'s download phase)
+  — now a `repeat { ... } while true` loop with an explicit
+  `downloadAttempts` counter and `currentSelector` variable (previously a
+  single `if` around one hardcoded retry — functionally the same one
+  retry, but now expressed so a future change to the retry condition
+  can't accidentally make it unbounded).
+- The hardware→software ffmpeg fallback (`runDownloadAndConvert`'s
+  conversion phase) — previously fired unconditionally on *any* hardware
+  encoder failure, including disk-full, which wasted a full second
+  encode attempt on a failure mode the software encoder could never fix
+  either. Now skipped entirely when the hardware failure is fatal per
+  `SystemFailureKind`, and only falls back for genuinely transient
+  hardware issues (e.g. an unsupported profile).
+
+Neither loop was verified to literally spin forever in the pre-fix code
+(both were already bounded to one retry each) — the fix is about
+guaranteeing *no* auto-retry mechanism, present or future, can fire on a
+fatal error class, plus an explicit numeric cap as a backstop per the
+spec ask, not just a documented bug reproduction.
+
+**Fatal-failure alerts**: disk-full/permission-denied failures (from
+either the download or conversion phase) now build a dedicated
+`ActionableAlert` directly (title/message/"OK", no `.action` — reusing
+the same `viewModel.actionableAlert`/`.alert(...)` plumbing already wired
+in `ContentView`, not a new alert type) instead of falling through to the
+generic `"... failed (see log)."` + `presentActionableAlert` path. The
+disk-full message includes the drive name (`DiskSpaceService.
+volumeName(at:)`) and, when available, both the pre-flight byte estimate
+and current available space (`DiskSpaceService.availableBytes(at:)`,
+formatted via `ByteCountFormatter`) — "if you can" per the spec, so a
+download-phase disk-full (no size estimate computed for that phase) still
+shows available space alone rather than blocking on having an estimate.
+
+**Pre-flight disk-space check** (`AppViewModel.confirmEnoughDiskSpace`,
+called from `runDownloadAndConvert` right before the conversion phase
+starts): estimates output size via `FFmpegService.estimateOutputBytes`
+(duration × estimated bits-per-second from `FFmpegService.
+estimatedBitsPerSecond`, itself driven by width/height/fps — probed
+fresh off the *downloaded* file via the new `FFmpegService.
+probeVideoDimensions`, not from the pre-download format selection, since
+the fallback-selector download path bypasses per-format-ID info
+entirely) and compares against `DiskSpaceService.availableBytes(at:)`
+for the output directory. If the estimate exceeds available space, the
+user gets a blocking Continue/Cancel alert (`AppViewModel.
+diskSpaceWarning` + `withCheckedContinuation`/`diskSpaceContinuation`,
+resolved by `ContentView`'s new `.alert(...)` calling
+`resolveDiskSpaceWarning(proceed:)`) *before* ffmpeg ever starts — not
+just a failure after the fact. Both the duration probe and the
+dimensions probe are best-effort exactly like the existing duration-only
+probe this was added alongside: if either fails, the pre-flight check is
+silently skipped (matches this file's established "probe failure ->
+degrade gracefully, don't block the run" convention elsewhere, e.g. the
+color-info probe).
+
+**Output-size estimate is deliberately rough, not exact**
+(`FFmpegService.estimatedBitsPerSecond`): ProRes uses Apple's published
+reference data rates at 1920×1080/29.97fps (Proxy=45, LT=102, 422=147,
+HQ=220, 4444=330 Mbps), linearly scaled by `(actual pixels / reference
+pixels) × (actual fps / reference fps)`. H.264 reuses the existing
+`H264Quality.hardwareBitrate` values as a flat target regardless of
+hardware/software encoder or resolution — matching that property's own
+existing "deliberately not resolution-scaled" note, since libx264's CRF
+mode doesn't target a fixed rate at all, so any number here is already
+an approximation. Good enough to catch "this clearly won't fit" before
+spending minutes encoding; never intended to predict exact output size.
+
+**Verified**: harness-tested (see "The actually-useful verification
+method" above) — `SystemFailureKind.classify` against all four fatal
+patterns plus a non-fatal (403) string; `estimateOutputBytes` reduces to
+exactly the baseline Mbps figure at the reference resolution/fps, scales
+~4x for 4K vs 1080p at the same fps for ProRes, and is resolution-*in*variant
+for H.264 as designed. Also ran a real end-to-end pass — real yt-dlp
+download of the "Me at the zoo" test clip, real `ffprobe` duration +
+dimensions probe, real byte estimate off the real probed values (no
+mocking) — confirmed via the standalone harness pattern, not just unit
+assertions on synthetic input. `DiskSpaceService.availableBytes`/
+`volumeName` verified against a real directory (returned this machine's
+actual free space and volume name, not a stub). The Continue/Cancel
+disk-space-warning *alert UI itself* was not visually screenshotted this
+session (would require actually filling the disk or faking an
+implausibly large estimate to trigger) — say so if asked, don't imply it
+was seen on screen; the underlying estimate/comparison logic it depends
+on was verified as above.
 
 ## Release & distribution
 

@@ -131,6 +131,19 @@ struct ContentView: View {
         } message: { alert in
             Text(alert.message)
         }
+        .alert(
+            "Low Disk Space",
+            isPresented: Binding(
+                get: { viewModel.diskSpaceWarning != nil },
+                set: { if !$0 { viewModel.resolveDiskSpaceWarning(proceed: false) } }
+            ),
+            presenting: viewModel.diskSpaceWarning
+        ) { _ in
+            Button("Continue Anyway", role: .destructive) { viewModel.resolveDiskSpaceWarning(proceed: true) }
+            Button("Cancel", role: .cancel) { viewModel.resolveDiskSpaceWarning(proceed: false) }
+        } message: { warning in
+            Text(warning.message)
+        }
     }
 
     // MARK: - Toolbar
@@ -530,7 +543,7 @@ struct ContentView: View {
             if showLogPanel {
                 DisclosureGroup("Show details", isExpanded: $logExpanded) {
                     LogView(text: viewModel.log)
-                        .frame(minHeight: 160)
+                        .frame(minHeight: 160, maxHeight: 320)
                         .padding(.top, 4)
                 }
                 .font(.callout)

@@ -157,6 +157,127 @@ enum FFmpegService {
         return (args, colorInfo.isHDR)
     }
 
+    // MARK: - Video dimensions (for the pre-flight disk-space estimate)
+
+    /// Width/height/fps of the downloaded file's first video stream, used
+    /// only to estimate output size before starting a conversion — not
+    /// part of the conversion arguments themselves.
+    static func probeVideoDimensions(
+        fileURL: URL,
+        runner: ProcessRunner
+    ) async -> Result<(width: Int, height: Int, fps: Double), GrabError> {
+        let arguments = [
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height,r_frame_rate",
+            "-of", "json",
+            fileURL.path
+        ]
+        let result = await runner.run(path: Tool.ffprobe, arguments: arguments, qos: .userInitiated)
+        guard result.exitCode == 0 else {
+            let message = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .failure(GrabError(message: message.isEmpty ? "ffprobe exited with code \(result.exitCode)" : message))
+        }
+        guard let data = result.output.data(using: .utf8) else {
+            return .failure(GrabError(message: "ffprobe returned unreadable output"))
+        }
+
+        struct Probe: Decodable {
+            struct Stream: Decodable {
+                let width: Int?
+                let height: Int?
+                let r_frame_rate: String?
+            }
+            let streams: [Stream]
+        }
+
+        do {
+            let probe = try JSONDecoder().decode(Probe.self, from: data)
+            guard let stream = probe.streams.first, let width = stream.width, let height = stream.height else {
+                return .failure(GrabError(message: "ffprobe did not report video dimensions"))
+            }
+            let fps = parseFrameRateFraction(stream.r_frame_rate) ?? 30
+            return .success((width, height, fps))
+        } catch {
+            return .failure(GrabError(message: "Failed to parse ffprobe output: \(error.localizedDescription)"))
+        }
+    }
+
+    /// ffprobe reports frame rate as a fraction string like "30000/1001" or
+    /// "25/1".
+    private static func parseFrameRateFraction(_ raw: String?) -> Double? {
+        guard let raw else { return nil }
+        guard let slashIndex = raw.firstIndex(of: "/") else { return Double(raw) }
+        guard let numerator = Double(raw[raw.startIndex..<slashIndex]),
+              let denominator = Double(raw[raw.index(after: slashIndex)...]),
+              denominator != 0
+        else { return nil }
+        return numerator / denominator
+    }
+
+    // MARK: - Output size estimate (for the pre-flight disk-space check)
+
+    /// Very rough bits-per-second estimate — good enough to catch "about to
+    /// fill the disk" before spending minutes encoding, not an exact
+    /// per-title prediction. ProRes rates are Apple's published reference
+    /// data rates at 1920x1080/29.97fps, scaled linearly by pixel count and
+    /// frame rate. H.264 reuses `H264Quality.hardwareBitrate` as the target
+    /// rate regardless of hardware/software encoder — libx264's CRF mode
+    /// doesn't target a fixed rate, so this is explicitly an estimate
+    /// either way, and (matching hardwareBitrate itself) deliberately not
+    /// resolution-scaled.
+    static func estimatedBitsPerSecond(
+        conversionMode: ConversionMode,
+        proResTier: ProResTier,
+        h264Quality: H264Quality,
+        width: Int,
+        height: Int,
+        fps: Double
+    ) -> Double {
+        switch conversionMode {
+        case .none:
+            return 0
+        case .proRes:
+            let referencePixels = 1920.0 * 1080.0
+            let referenceFPS = 29.97
+            let pixels = Double(max(width, 1) * max(height, 1))
+            let scale = (pixels / referencePixels) * (max(fps, 1) / referenceFPS)
+            let baselineMbps: Double
+            switch proResTier {
+            case .proxy: baselineMbps = 45
+            case .lt: baselineMbps = 102
+            case .standard: baselineMbps = 147
+            case .hq: baselineMbps = 220
+            case .p4444: baselineMbps = 330
+            }
+            return baselineMbps * 1_000_000 * scale
+        case .h264:
+            let mbps: Double
+            switch h264Quality {
+            case .high: mbps = 12
+            case .medium: mbps = 6
+            case .low: mbps = 2.5
+            }
+            return mbps * 1_000_000
+        }
+    }
+
+    static func estimateOutputBytes(
+        durationSeconds: TimeInterval,
+        conversionMode: ConversionMode,
+        proResTier: ProResTier,
+        h264Quality: H264Quality,
+        width: Int,
+        height: Int,
+        fps: Double
+    ) -> Int64 {
+        let bitsPerSecond = estimatedBitsPerSecond(
+            conversionMode: conversionMode, proResTier: proResTier, h264Quality: h264Quality,
+            width: width, height: height, fps: fps
+        )
+        return Int64((bitsPerSecond / 8.0) * max(durationSeconds, 0))
+    }
+
     // MARK: - Duration + progress parsing (for the conversion progress bar)
 
     /// Total source duration in seconds, read-only via ffprobe. Used only to

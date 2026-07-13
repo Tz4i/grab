@@ -41,16 +41,94 @@ final class AppViewModel: ObservableObject {
     @Published var appUpdateInfo: AppUpdateInfo?
     @Published var isUpdatingYTDLPFromBanner = false
 
+    /// Set when a pre-flight disk-space estimate comes up short, right
+    /// before a conversion would start — the UI presents this as a
+    /// Continue/Cancel alert and `resolveDiskSpaceWarning` resumes
+    /// `diskSpaceContinuation` with the user's choice.
+    @Published var diskSpaceWarning: DiskSpaceWarning?
+    private var diskSpaceContinuation: CheckedContinuation<Bool, Never>?
+
     var isBusy: Bool { isFetchingFormats || isRunning }
 
+    /// Max attempts (initial try + retries) for any single auto-retry loop
+    /// below (the 403 download retry, the hardware->software conversion
+    /// fallback) — a hard backstop so a future classification bug can
+    /// never turn into an unbounded retry loop, independent of whichever
+    /// per-error-kind logic decides *whether* to retry at all.
+    private let maxAttemptsPerPhase = 2
+
     private let runner = ProcessRunner()
-    private let maxLogLength = 200_000
+    private var logBuffer = LogBuffer()
+    private var logFlushPending = false
 
     private func appendLog(_ text: String) {
-        log += text
-        if log.count > maxLogLength {
-            log = String(log.suffix(maxLogLength))
+        logBuffer.feed(text)
+        scheduleLogFlush()
+    }
+
+    /// Batches @Published `log` updates instead of publishing on every
+    /// single appended line — ffmpeg can emit a status line many times a
+    /// second, and republishing (and re-rendering the log's Text view) on
+    /// every one of them is wasted work once the buffer is already
+    /// collapsing/capping the underlying lines.
+    private func scheduleLogFlush() {
+        guard !logFlushPending else { return }
+        logFlushPending = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard let self else { return }
+            self.logFlushPending = false
+            self.log = self.logBuffer.text
         }
+    }
+
+    private func flushLogNow() {
+        logFlushPending = false
+        log = logBuffer.text
+    }
+
+    /// Awaits the user's Continue/Cancel choice from a `DiskSpaceWarning`
+    /// alert. `requiredBytes` is the pre-flight estimate; if the available
+    /// space can't be determined at all, or is enough, this resolves
+    /// `true` immediately with no prompt.
+    private func confirmEnoughDiskSpace(requiredBytes: Int64, at directory: URL) async -> Bool {
+        guard let available = DiskSpaceService.availableBytes(at: directory), requiredBytes > available else {
+            return true
+        }
+        let driveName = DiskSpaceService.volumeName(at: directory) ?? "the output drive"
+        let message = "Estimated output size is \(DiskSpaceService.formatBytes(requiredBytes)), but only "
+            + "\(DiskSpaceService.formatBytes(available)) is free on \(driveName). The conversion will likely "
+            + "run out of space partway through. Continue anyway?"
+        return await withCheckedContinuation { continuation in
+            diskSpaceContinuation = continuation
+            diskSpaceWarning = DiskSpaceWarning(message: message)
+        }
+    }
+
+    func resolveDiskSpaceWarning(proceed: Bool) {
+        diskSpaceWarning = nil
+        diskSpaceContinuation?.resume(returning: proceed)
+        diskSpaceContinuation = nil
+    }
+
+    /// Builds a "not enough free space" message for the disk-full failure
+    /// alert — used both when the pre-flight estimate is unavailable (no
+    /// duration/dimensions probe) and when ffmpeg/yt-dlp actually hits
+    /// ENOSPC. Includes the estimate only when the caller has one.
+    private func diskFullMessage(at directory: URL, estimatedRequiredBytes: Int64?) -> String {
+        let driveName = DiskSpaceService.volumeName(at: directory) ?? "the output drive"
+        var message = "Not enough free space on \(driveName) to complete the operation."
+        if let estimatedRequiredBytes {
+            message += " Estimated \(DiskSpaceService.formatBytes(estimatedRequiredBytes)) needed"
+            if let available = DiskSpaceService.availableBytes(at: directory) {
+                message += ", \(DiskSpaceService.formatBytes(available)) available."
+            } else {
+                message += "."
+            }
+        } else if let available = DiskSpaceService.availableBytes(at: directory) {
+            message += " \(DiskSpaceService.formatBytes(available)) available."
+        }
+        return message
     }
 
     private func streamHandler(onChunk: ((String) -> Void)? = nil) -> (String) -> Void {
@@ -156,6 +234,7 @@ final class AppViewModel: ObservableObject {
                 lastError = error.message
                 presentActionableAlert(for: error.message)
             }
+            flushLogNow()
         }
     }
 
@@ -271,6 +350,7 @@ final class AppViewModel: ObservableObject {
             progressLabel = ""
             progressFraction = nil
             progressETA = nil
+            flushLogNow()
         }
     }
 
@@ -312,22 +392,58 @@ final class AppViewModel: ObservableObject {
             )
         }
 
-        var downloadResult = await attemptDownload(selector: formatSelector)
+        // Bounded retry loop (see maxAttemptsPerPhase): a genuinely transient
+        // failure (HTTP 403) gets one automatic retry with a simpler format
+        // selector. Anything SystemFailureKind recognizes as fatal (disk
+        // full, permission denied, missing binary) never retries at all —
+        // retrying those can only ever fail again, and previously nothing
+        // stopped a caller from wiring up an unbounded loop around this.
+        var currentSelector = formatSelector
+        var downloadAttempts = 0
+        var downloadResult: ProcessResult
+        repeat {
+            downloadAttempts += 1
+            downloadResult = await attemptDownload(selector: currentSelector)
+            guard downloadResult.exitCode != 0 else { break }
 
-        if downloadResult.exitCode != 0,
-           formatSelector != YTDLPService.fallbackFormatSelector,
-           YTDLPService.classifyFailure(downloadResult.output) == .forbidden403 {
+            let systemFailure = SystemFailureKind.classify(downloadResult.output)
+            guard !systemFailure.isFatal,
+                  downloadAttempts < maxAttemptsPerPhase,
+                  currentSelector != YTDLPService.fallbackFormatSelector,
+                  YTDLPService.classifyFailure(downloadResult.output) == .forbidden403
+            else { break }
+
             appendLog(
                 "\nDownload failed with HTTP 403 — automatically retrying once with a simpler format "
                 + "selection (\(YTDLPService.fallbackFormatSelector))…\n"
             )
-            downloadResult = await attemptDownload(selector: YTDLPService.fallbackFormatSelector)
-        }
+            currentSelector = YTDLPService.fallbackFormatSelector
+        } while true
 
         guard downloadResult.exitCode == 0 else {
             appendLog("\nyt-dlp exited with code \(downloadResult.exitCode).\n")
-            lastError = "Download failed (see log)."
-            presentActionableAlert(for: downloadResult.output)
+            switch SystemFailureKind.classify(downloadResult.output) {
+            case .diskFull:
+                lastError = "Not enough free space to complete the download."
+                actionableAlert = ActionableAlert(
+                    title: "Not Enough Disk Space",
+                    message: diskFullMessage(at: outputDir, estimatedRequiredBytes: nil),
+                    actionLabel: "OK",
+                    action: nil
+                )
+            case .permissionDenied:
+                lastError = "Download failed: permission denied writing to the output folder."
+                actionableAlert = ActionableAlert(
+                    title: "Permission Denied",
+                    message: "Grab doesn't have permission to write to \(outputDir.path). Choose a "
+                        + "different output folder, or grant access, then try again.",
+                    actionLabel: "OK",
+                    action: nil
+                )
+            case .missingBinary, .invalidInput, .none:
+                lastError = "Download failed (see log)."
+                presentActionableAlert(for: downloadResult.output)
+            }
             return
         }
 
@@ -394,6 +510,29 @@ final class AppViewModel: ObservableObject {
             sourceDuration = duration
         }
 
+        // Pre-flight disk-space check: estimate the output size from
+        // duration/resolution/fps/codec-tier and compare against free space
+        // on the output volume, warning (with a Continue/Cancel choice)
+        // before spending minutes encoding something that can't fit.
+        // Best-effort like the duration probe above — if either probe
+        // fails, there's nothing to estimate against, so this just skips
+        // silently rather than blocking the run.
+        var estimatedRequiredBytes: Int64?
+        if let duration = sourceDuration,
+           case .success(let dimensions) = await FFmpegService.probeVideoDimensions(fileURL: inputURL, runner: runner) {
+            let requiredBytes = FFmpegService.estimateOutputBytes(
+                durationSeconds: duration, conversionMode: conversionMode, proResTier: proResTier,
+                h264Quality: h264Quality, width: dimensions.width, height: dimensions.height, fps: dimensions.fps
+            )
+            estimatedRequiredBytes = requiredBytes
+            let proceed = await confirmEnoughDiskSpace(requiredBytes: requiredBytes, at: outputURL.deletingLastPathComponent())
+            guard proceed else {
+                appendLog("\nConversion cancelled by user (not enough free space).\n")
+                lastError = "Conversion cancelled (not enough free space)."
+                return
+            }
+        }
+
         // Tries the hardware encoder (prores_videotoolbox / h264_videotoolbox)
         // or its software counterpart (prores_ks / libx264) depending on
         // `useHardware`. Filter chain is identical either way for both
@@ -446,16 +585,30 @@ final class AppViewModel: ObservableObject {
             )
         }
 
+        // Bounded to maxAttemptsPerPhase (hardware attempt + at most one
+        // software retry) same as the download loop above. The fallback
+        // only fires when the hardware failure isn't one of
+        // SystemFailureKind's fatal categories — a disk-full or
+        // permission-denied failure will fail identically on the software
+        // encoder, so retrying just burns another full encode's worth of
+        // CPU/IO for a result that was never going to succeed.
         var convertResult = await attemptConversion(useHardware: useHardwareAcceleration)
+        var conversionAttempts = 1
 
-        if useHardwareAcceleration && convertResult.exitCode != 0 {
-            let hardwareEncoder = isH264 ? FFmpegService.h264HardwareEncoder : FFmpegService.hardwareEncoder
-            let softwareEncoder = isH264 ? FFmpegService.h264SoftwareEncoder : FFmpegService.softwareEncoder
-            appendLog(
-                "\nHardware encoder (\(hardwareEncoder)) failed (exit code \(convertResult.exitCode))"
-                + " — falling back to software encoder (\(softwareEncoder)).\n"
-            )
-            convertResult = await attemptConversion(useHardware: false)
+        if useHardwareAcceleration && convertResult.exitCode != 0 && conversionAttempts < maxAttemptsPerPhase {
+            let systemFailure = SystemFailureKind.classify(convertResult.output)
+            if systemFailure.isFatal {
+                appendLog("\nHardware encoder failed with a non-retryable error — not falling back to software encoding (see error below).\n")
+            } else {
+                let hardwareEncoder = isH264 ? FFmpegService.h264HardwareEncoder : FFmpegService.hardwareEncoder
+                let softwareEncoder = isH264 ? FFmpegService.h264SoftwareEncoder : FFmpegService.softwareEncoder
+                appendLog(
+                    "\nHardware encoder (\(hardwareEncoder)) failed (exit code \(convertResult.exitCode))"
+                    + " — falling back to software encoder (\(softwareEncoder)).\n"
+                )
+                conversionAttempts += 1
+                convertResult = await attemptConversion(useHardware: false)
+            }
         }
 
         if convertResult.exitCode == 0 {
@@ -478,7 +631,37 @@ final class AppViewModel: ObservableObject {
             )
         } else {
             appendLog("\nffmpeg exited with code \(convertResult.exitCode).\n")
-            lastError = "\(modeName) conversion failed (see log)."
+            let outputDirectory = outputURL.deletingLastPathComponent()
+            switch SystemFailureKind.classify(convertResult.output) {
+            case .diskFull:
+                lastError = "Not enough free space (see log)."
+                actionableAlert = ActionableAlert(
+                    title: "Not Enough Disk Space",
+                    message: diskFullMessage(at: outputDirectory, estimatedRequiredBytes: estimatedRequiredBytes),
+                    actionLabel: "OK",
+                    action: nil
+                )
+            case .permissionDenied:
+                lastError = "\(modeName) conversion failed: permission denied writing to the output folder."
+                actionableAlert = ActionableAlert(
+                    title: "Permission Denied",
+                    message: "Grab doesn't have permission to write to \(outputDirectory.path). Choose a "
+                        + "different output folder, or grant access, then try again.",
+                    actionLabel: "OK",
+                    action: nil
+                )
+            case .invalidInput:
+                lastError = "\(modeName) conversion failed: the downloaded file appears invalid or corrupted."
+                actionableAlert = ActionableAlert(
+                    title: "Invalid Source File",
+                    message: "ffmpeg couldn't read the downloaded file — it may be corrupted or incomplete. "
+                        + "Try downloading again.",
+                    actionLabel: "OK",
+                    action: nil
+                )
+            case .missingBinary, .none:
+                lastError = "\(modeName) conversion failed (see log)."
+            }
         }
     }
 

@@ -179,6 +179,51 @@ enum CookieBrowser: String, CaseIterable, Identifiable {
     }
 }
 
+/// Recognizes OS-level fatal failures that can surface from either
+/// yt-dlp's or ffmpeg's stderr equally, since both are just processes
+/// hitting the same OS write() errors on macOS. These are never worth
+/// auto-retrying — retrying a disk-full failure just burns CPU/IO forever
+/// without ever being able to succeed. `.none` means "not one of these
+/// recognized fatal patterns" — the caller falls back to its own
+/// finer-grained classification (e.g. YTDLPService.classifyFailure) for
+/// transient cases like HTTP 403.
+enum SystemFailureKind: Equatable {
+    case diskFull
+    case permissionDenied
+    case missingBinary
+    case invalidInput
+    case none
+
+    var isFatal: Bool { self != .none }
+
+    static func classify(_ output: String) -> SystemFailureKind {
+        let lower = output.lowercased()
+        if lower.contains("no space left on device") {
+            return .diskFull
+        }
+        if lower.contains("permission denied") {
+            return .permissionDenied
+        }
+        if lower.contains("required tool not found") || lower.contains("failed to launch") {
+            return .missingBinary
+        }
+        if lower.contains("invalid data found when processing input")
+            || lower.contains("moov atom not found")
+            || lower.contains("could not find codec parameters") {
+            return .invalidInput
+        }
+        return .none
+    }
+}
+
+/// The pre-flight "this probably won't fit" warning shown before starting
+/// a conversion whose estimated output size exceeds free space on the
+/// output volume. See AppViewModel.confirmEnoughDiskSpace.
+struct DiskSpaceWarning: Identifiable {
+    let id = UUID()
+    let message: String
+}
+
 /// A failure alert with an optional one-click follow-up action, surfaced
 /// when `YTDLPService.classifyFailure` recognizes a known yt-dlp failure
 /// pattern in stderr (bot-check, sign-in-required, 403, unavailable).
