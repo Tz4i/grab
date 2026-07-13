@@ -15,6 +15,7 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Grab/Sources
+      - path: Grab/Resources/Assets.xcassets
     info:
       path: Grab/Resources/Info.plist
       properties:
@@ -39,3 +40,4 @@ targets:
         CODE_SIGN_IDENTITY: "-"
         ENABLE_HARDENED_RUNTIME: false
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: false
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
