@@ -28,7 +28,7 @@ struct DependencySetupView: View {
             footer
         }
         .frame(width: 560, height: 660)
-        .interactiveDismissDisabled(!hasAcknowledgedDisclaimer)
+        .interactiveDismissDisabled(!hasAcknowledgedDisclaimer || !allRequiredFound)
         .task { await viewModel.refresh() }
     }
 
@@ -230,12 +230,29 @@ struct DependencySetupView: View {
 
     // MARK: - Footer
 
+    /// Gates the checkbox itself, not just Continue — you can't even check
+    /// "I understand" until the required tools are actually present. If the
+    /// sheet re-appears later because a previously-installed tool went
+    /// missing again, this also re-locks a checkbox that was already
+    /// checked from a prior session (the bound value stays true, but the
+    /// control itself is inert until fixed).
+    private var allRequiredFound: Bool {
+        viewModel.missingRequired.isEmpty
+    }
+
     private var footer: some View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle(isOn: $hasAcknowledgedDisclaimer) {
                 Text("I understand")
             }
             .toggleStyle(.checkbox)
+            .disabled(!allRequiredFound)
+
+            if !allRequiredFound {
+                Text("Install the missing tools above before continuing.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             HStack {
                 Spacer()
@@ -243,7 +260,7 @@ struct DependencySetupView: View {
                     onContinue()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!hasAcknowledgedDisclaimer)
+                .disabled(!hasAcknowledgedDisclaimer || !allRequiredFound)
             }
         }
         .padding(16)
