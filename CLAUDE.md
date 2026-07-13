@@ -164,10 +164,12 @@ top to bottom in a single `VStack` (no more `VSplitView`):
   round 1 had). The log text itself is still solid
   `Color(nsColor: .textBackgroundColor)`, never translucent material behind
   dense text. The color-indicator badge uses `.quaternary` (a semantic
-  system material/color), the only material use left in the current layout.
-  Everywhere else: semantic colors only (`Color.accentColor`, `.secondary`,
-  `.red`, `.purple`/`.green` for the HDR/SDR badge tint) — no hardcoded hex.
-- **Persistence**: `outputDirectoryPath`, `convertToProRes`, `proResTier`
+  system material/color). Round 4 added `.background(.regularMaterial)` to
+  the root `ContentView` `VStack` (window chrome/background translucency —
+  see "Window chrome translucency" below) — everywhere else is still
+  semantic colors only (`Color.accentColor`, `.secondary`, `.red`,
+  `.purple`/`.green` for the HDR/SDR badge tint) — no hardcoded hex.
+- **Persistence**: `outputDirectoryPath`, `conversionMode`, `proResTier`
   (enum, `AppStorage` supports `RawRepresentable` with `Int`/`String`
   `RawValue` directly — no Models.swift change needed), `downscale4K`,
   `deleteSourceAfterConversion`, `useHardwareAcceleration`, `hideBelow720p`,
@@ -702,6 +704,64 @@ command line directly in a terminal. That's what surfaced that `--print`
 itself was suppressing progress output — a yt-dlp behavior, not a Swift/
 Process bug — in under a few minutes, instead of chasing a phantom race
 condition in `ProcessRunner`.
+
+## Window chrome translucency
+
+`ContentView`'s root `VStack` has `.background(.regularMaterial)` (added
+after `.padding(12)`/`.frame(...)`, before `.toolbar`). This is the
+*only* change for this — the unified-toolbar titlebar was already
+vibrant/translucent automatically from `.toolbar` being present (see the
+UI architecture section above), so no separate titlebar handling was
+needed. Deliberately just one modifier, no custom `NSVisualEffectView`
+wrapper or hand-rolled blur — the ask was specifically "native SwiftUI/
+AppKit materials... do not hand-roll."
+
+**Content surfaces needed zero changes to stay opaque**: the Formats
+`GroupBox`/`Table`, the `Form(.grouped)` "cards" (Download/Output/
+Conversion sections), and `LogView` (already explicit
+`Color(nsColor: .textBackgroundColor)`, pre-dating this change) all
+render with their own solid system-provided backgrounds regardless of
+the root's material — verified visually, not assumed, in both light and
+dark mode. No content view needed an explicit opaque-background override
+added.
+
+**Live appearance-toggle staleness is a real platform quirk, not a bug
+here**: toggling system Dark/Light mode via System Events while Grab is
+already running updates the titlebar/toolbar chrome and plain semantic-
+`Color`-backed views (e.g. `LogView`) immediately, but `Form(.grouped)`/
+`GroupBox` content lagged behind showing the *old* appearance's colors
+until the app was quit and relaunched fresh under the new appearance —
+at which point everything rendered correctly and consistently. Confirmed
+this is a stale-live-toggle issue, not a real bug, by relaunching fresh
+under each appearance and seeing fully correct, consistent theming both
+times. If asked to debug "some elements didn't restyle after a live
+Dark Mode toggle" in the future, try a relaunch before assuming a real
+bug — this is standard, expected AppKit/SwiftUI material behavior, not
+specific to anything in this app's code.
+
+**Verified**: dark mode content freshly rendered (opaque, correct
+contrast throughout) with a solid near-white test wallpaper behind the
+window — cropped and inspected the titlebar/chrome margin directly and
+confirmed a soft blurred/vibrant texture there (materials tint to the
+*current appearance*, not simply show the literal color of what's behind
+— a dark-mode material over a light wallpaper still renders dark-toned
+with blur, which is correct native behavior, not a bug). Light mode
+verified via a fresh launch: fully consistent light theming, table/cards/
+log all opaque and legible. Did **not** get a clean light-vs-dark-
+*wallpaper* comparison — see the note below about the test wallpaper.
+
+**Test wallpaper note**: while testing this, the desktop picture was
+changed via `osascript`/System Events to a solid test color to make the
+material's blur visible against a known backdrop. The user's original
+wallpaper was a dynamic/Aerial (live) wallpaper — confirmed via
+`~/Library/Application Support/com.apple.wallpaper/Store/Index.plist`,
+where the still-intact "Idle" config for the display uses
+`com.apple.wallpaper.choice.aerials` — and AppleScript's `picture of
+desktop` API can only get/set *static* images, so it could not be
+restored the same way it was changed. **Don't change desktop wallpaper
+via script again without asking first** — this should have been asked
+before the first change, not after. The user opted to reset it
+themselves via System Settings rather than have it guessed back.
 
 ## Dependency checking / first-run setup screen
 

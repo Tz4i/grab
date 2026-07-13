@@ -57,6 +57,7 @@ struct ContentView: View {
         }
         .padding(12)
         .frame(minWidth: 820, minHeight: 620)
+        .background(.regularMaterial)
         .toolbar { toolbarContent }
         .task {
             NotificationService.requestAuthorizationIfNeeded()
