@@ -182,7 +182,7 @@ enum YTDLPService {
         let outputTemplate = outputDir.appendingPathComponent("%(title)s.%(ext)s").path
         arguments += [
             "--merge-output-format", "mp4",
-            "--ffmpeg-location", "/opt/homebrew/bin",
+            "--ffmpeg-location", Tool.ffmpegDirectory,
             "-f", formatSelector,
             "-o", outputTemplate,
             "--print", "after_move:\(outputMarker)%(filepath)s",

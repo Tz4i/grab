@@ -138,15 +138,18 @@ final class ProcessRunner {
     /// GUI apps don't inherit the shell's PATH, so tools that shell out to
     /// other tools (yt-dlp calling ffmpeg to merge streams) can fail to find
     /// them even though we launch yt-dlp itself by absolute path. Belt and
-    /// braces alongside passing `--ffmpeg-location` explicitly.
+    /// braces alongside passing `--ffmpeg-location` explicitly. Both
+    /// Homebrew prefixes are prepended (not just whichever one resolved a
+    /// binary) since Rosetta/mixed installs can have tools split across
+    /// both `/opt/homebrew` and `/usr/local`.
     private static func environmentWithHomebrewPath() -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
-        let homebrewBin = "/opt/homebrew/bin"
         let existing = environment["PATH"] ?? ""
-        let components = existing.split(separator: ":").map(String.init)
-        if !components.contains(homebrewBin) {
-            environment["PATH"] = existing.isEmpty ? homebrewBin : "\(homebrewBin):\(existing)"
+        var components = existing.split(separator: ":").map(String.init)
+        for prefix in Tool.searchPrefixes.reversed() where !components.contains(prefix) {
+            components.insert(prefix, at: 0)
         }
+        environment["PATH"] = components.joined(separator: ":")
         return environment
     }
 }
