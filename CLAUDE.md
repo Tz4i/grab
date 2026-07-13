@@ -519,17 +519,27 @@ blocks/affects the download pipeline either way.
 
 ## Building / running (no full Xcode.app in /Applications on this machine)
 
-Only Command Line Tools are installed under `/Applications`. There is an
-**Xcode-beta.app in `~/Downloads`** (v27.0 at last check) that can build
-this project without touching the global `xcode-select` setting:
+Only Command Line Tools are installed under `/Applications`. There is a
+full **Xcode-beta.app** elsewhere that can build this project without
+touching the global `xcode-select` setting — **its location has already
+moved once** (was `~/Downloads`, then turned up on an external volume at
+`/Volumes/Untitled/Xcode-beta.app`), so don't hardcode a path from an old
+note. Find it fresh each session:
+
+```sh
+mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'"
+```
 
 ```sh
 xcodegen generate   # regenerate Grab.xcodeproj after editing project.yml
 
-DEVELOPER_DIR="/Users/sebas/Downloads/Xcode-beta.app/Contents/Developer" \
+DEVELOPER_DIR="$(mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'" | head -1)/Contents/Developer" \
   xcodebuild -project Grab.xcodeproj -scheme Grab -configuration Debug \
   -destination 'platform=macOS' build
 ```
+
+`scripts/release.sh` (see "Release & distribution" below) already does
+this Spotlight lookup itself — don't hand-maintain the path there either.
 
 Built app lands in DerivedData, e.g.:
 `~/Library/Developer/Xcode/DerivedData/Grab-*/Build/Products/Debug/Grab.app`
@@ -608,13 +618,92 @@ itself was suppressing progress output — a yt-dlp behavior, not a Swift/
 Process bug — in under a few minutes, instead of chasing a phantom race
 condition in `ProcessRunner`.
 
+## Release & distribution
+
+**This is a git repo now** (it wasn't for the first two sessions of work —
+initialized this session, `main` branch, no `.git` history prior to the
+"Initial commit" that captured the pre-existing app as a baseline).
+`Grab.xcodeproj/` is gitignored (regenerated from `project.yml` by
+`xcodegen generate`, per the "do not hand-edit" note at the top of this
+file — no reason to track a generated artifact).
+
+**Distribution decision**: stays unsigned/ad-hoc (`CODE_SIGN_IDENTITY:
+"-"`), no paid Apple Developer ID, no notarization — this was an explicit
+user choice (asked directly), not a default/oversight. Packaged as a DMG
+via `scripts/release.sh` for GitHub Releases. GitHub repo itself starts
+**private**, with a documented intent to go **public under MIT** later
+(`LICENSE` file already added in anticipation of that, even while private).
+
+**Dual-arch Homebrew support**: `Tools.swift` used to hardcode
+`/opt/homebrew/bin` (Apple-Silicon-only) for `yt-dlp`/`ffmpeg`/`ffprobe`/
+`brew`. Now searches `/opt/homebrew/bin` then `/usr/local/bin` (Intel) via
+`Tool.searchPrefixes`, resolved once per launch. `YTDLPService`'s
+`--ffmpeg-location` and `ProcessRunner`'s injected `PATH` both derive from
+the same resolution instead of a separate hardcoded path — verified via a
+standalone harness (real resolution on this Apple-Silicon machine) plus an
+isolated algorithm test proving the fallthrough-to-second-prefix path
+works, since this machine can't produce a real "Intel Homebrew missing
+from /opt/homebrew" scenario to test against directly.
+
+**App icon**: rounded-square indigo/purple gradient, downward arrow
+feeding into a play triangle (download + video in one glyph), generated at
+1024px via a throwaway CoreGraphics/AppKit script (not checked in — icon
+generation isn't a repeatable build step, only the resulting PNGs in
+`Grab/Resources/Assets.xcassets/AppIcon.appiconset/` are). Full mac idiom
+size set (16 through 512, 1x/2x) via `sips`. Wired in via
+`ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon` in `project.yml`, not a
+manually-placed `.icns` — confirmed a real `AppIcon.icns` + `Assets.car`
+land in the built app's `Contents/Resources`.
+
+**Versioning**: `CFBundleShortVersionString`/`CFBundleVersion` in the
+`Info.plist` properties block of `project.yml` used to be separate literal
+strings from `MARKETING_VERSION`/`CURRENT_PROJECT_VERSION` in the settings
+block — two places that had to be bumped in lockstep by hand, an easy way
+to ship a build with a stale version string. Now `$(MARKETING_VERSION)`/
+`$(CURRENT_PROJECT_VERSION)` (Xcode does the substitution on the static
+Info.plist at build time regardless of `GENERATE_INFOPLIST_FILE: false` —
+`CFBundleExecutable`/`CFBundleIdentifier` already relied on this same
+substitution before this session). Single source of truth is now
+`MARKETING_VERSION` in `project.yml`; bump only that for a release.
+`scripts/release.sh` reads it from there to name the DMG.
+
+**`scripts/release.sh`**: `xcodegen generate` → Release `xcodebuild` →
+stage `Grab.app` + an `/Applications` symlink → `hdiutil create -format
+UDZO` → `build/Grab-<version>.dmg`. Locates a full Xcode install via the
+same `mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'"` lookup
+as the manual build instructions above, rather than hardcoding a path —
+deliberate, since that path has already moved once this session. `build/`
+is gitignored.
+
+**Gatekeeper on an unsigned/ad-hoc DMG — verified with a real caveat**:
+this dev machine has Gatekeeper assessments fully disabled
+(`spctl --status` → "assessments disabled"), so `spctl -a -vv` against a
+quarantined copy of the built app returned "accepted" here — **that is
+not representative of a real user's Mac** and was not treated as
+verification that the app opens cleanly elsewhere. What *was* verified
+directly: manually tagging a copy with `com.apple.quarantine` (mimicking a
+browser download) and then clearing it with `/usr/bin/xattr -rc
+<path>.app` does remove the flag (confirmed via `xattr -p` erroring "No
+such xattr" afterward) — this is the one workaround documented in
+`README.md` that's mechanically confirmed rather than assumed from Apple's
+docs. Also hit and noted for future sessions: this machine has a
+`pip`-installed `xattr` (`/Library/Frameworks/Python.framework/.../bin/xattr`)
+shadowing `/usr/bin/xattr` on `PATH`, and the Python one doesn't support
+`-r` — silently different flag set, not a typo. `README.md`'s instructions
+call out `/usr/bin/xattr` explicitly for this reason. The System
+Settings → Privacy & Security → "Open Anyway" path (also documented) is
+standard, current Apple-documented behavior but *wasn't* visually
+confirmed this session, for the same Gatekeeper-disabled-on-this-machine
+reason — say so if asked, don't imply it was screenshotted.
+
 ## Things intentionally NOT done
 
 - No unit test target in the Xcode project itself — verification so far
   has been via the standalone harness pattern above, run manually. If
   asked to add real test coverage, a Swift Testing/XCTest target wired
   into the scheme would be the way to formalize this.
-- No code signing / notarization — ad-hoc signed only, matches the
-  "personal, unsigned build" requirement.
+- No code signing / notarization — ad-hoc signed only, an explicit user
+  decision this session (not a default) — see "Release & distribution"
+  above. Revisit if the user later gets a paid Apple Developer ID.
 - No security-scoped bookmarks for the output folder — sandbox is off, so
   the plain `@AppStorage`-persisted path in `ContentView` is sufficient.
