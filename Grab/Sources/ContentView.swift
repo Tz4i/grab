@@ -46,6 +46,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            updateBannersSection
             formatsSection
             colorIndicatorBadge
             downloadOptionsSection
@@ -59,6 +60,7 @@ struct ContentView: View {
         .task {
             NotificationService.requestAuthorizationIfNeeded()
             viewModel.checkYTDLPVersion()
+            viewModel.checkForUpdates()
             await dependencySetup.refresh()
             if !hasCompletedOnboarding || !dependencySetup.missingRequired.isEmpty {
                 showSetupSheet = true
@@ -191,6 +193,68 @@ struct ContentView: View {
             .disabled(viewModel.isBusy || viewModel.selectedVideoID == nil)
             .help("Download the selected formats")
         }
+    }
+
+    // MARK: - Update banners
+
+    @ViewBuilder
+    private var updateBannersSection: some View {
+        if let info = viewModel.ytdlpUpdateInfo {
+            updateBanner(
+                icon: "arrow.triangle.2.circlepath",
+                text: "A newer yt-dlp is available (installed \(info.installed) → latest \(info.latest)). "
+                    + "Update now?",
+                actionLabel: "Update",
+                isBusy: viewModel.isUpdatingYTDLPFromBanner,
+                action: { Task { await viewModel.updateYTDLPFromBanner() } },
+                dismiss: { viewModel.ytdlpUpdateInfo = nil }
+            )
+        }
+        if let info = viewModel.appUpdateInfo {
+            updateBanner(
+                icon: "sparkles",
+                text: "Grab \(info.version) is available.",
+                actionLabel: "View Release",
+                isBusy: false,
+                action: { NSWorkspace.shared.open(info.url) },
+                dismiss: { viewModel.appUpdateInfo = nil }
+            )
+        }
+    }
+
+    private func updateBanner(
+        icon: String,
+        text: String,
+        actionLabel: String,
+        isBusy: Bool,
+        action: @escaping () -> Void,
+        dismiss: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .foregroundStyle(Color.accentColor)
+            Text(text)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            if isBusy {
+                ProgressView().controlSize(.small)
+            } else {
+                Button(actionLabel, action: action)
+                    .controlSize(.small)
+            }
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 
     // MARK: - Formats

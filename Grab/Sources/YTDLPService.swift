@@ -262,6 +262,51 @@ enum YTDLPService {
         let trimmed = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
+
+    /// `brew outdated --json=v2 yt-dlp` prints nothing but valid JSON
+    /// (`{"formulae": [], "casks": []}`) when yt-dlp is up to date, and a
+    /// populated `formulae` entry when it isn't — verified directly against
+    /// this machine's real Homebrew install rather than assumed from docs.
+    /// Silently returns nil on any failure (brew missing, network-dependent
+    /// tap refresh failing, yt-dlp not installed, unparseable output) —
+    /// this is a best-effort launch check, never worth surfacing an error
+    /// for. Homebrew occasionally prints a progress line ("checking for
+    /// JSON API...") ahead of the JSON body depending on cache state, so
+    /// parsing starts at the first `{` rather than assuming the whole
+    /// captured output is pure JSON.
+    static func checkForUpdate(runner: ProcessRunner) async -> YTDLPUpdateInfo? {
+        guard FileManager.default.isExecutableFile(atPath: Tool.ytdlp) else { return nil }
+        let result = await runner.run(path: Tool.brew, arguments: ["outdated", "--json=v2", "yt-dlp"], qos: .utility)
+        guard result.exitCode == 0,
+              let jsonStart = result.output.firstIndex(of: "{"),
+              let data = String(result.output[jsonStart...]).data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(BrewOutdatedResponse.self, from: data),
+              let formula = decoded.formulae.first(where: { $0.name == "yt-dlp" }),
+              let installed = formula.installedVersions.last
+        else { return nil }
+        return YTDLPUpdateInfo(installed: installed, latest: formula.currentVersion)
+    }
+}
+
+struct YTDLPUpdateInfo: Equatable {
+    let installed: String
+    let latest: String
+}
+
+private struct BrewOutdatedResponse: Decodable {
+    let formulae: [BrewOutdatedFormula]
+}
+
+private struct BrewOutdatedFormula: Decodable {
+    let name: String
+    let installedVersions: [String]
+    let currentVersion: String
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case installedVersions = "installed_versions"
+        case currentVersion = "current_version"
+    }
 }
 
 enum YTDLPFailureKind {

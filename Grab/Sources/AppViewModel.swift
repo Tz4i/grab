@@ -31,6 +31,16 @@ final class AppViewModel: ObservableObject {
     /// "Reveal in Finder" button; nil until a job actually completes.
     @Published var lastOutputURL: URL?
 
+    /// Both update banners: nil means "don't show" — either no update is
+    /// available, the check hasn't completed yet, the check failed (handled
+    /// silently, see AppUpdateService/YTDLPService.checkForUpdate), or the
+    /// user dismissed the banner this session. Not persisted — a fresh
+    /// launch re-checks and re-shows if still applicable, which is the
+    /// point of an update nag.
+    @Published var ytdlpUpdateInfo: YTDLPUpdateInfo?
+    @Published var appUpdateInfo: AppUpdateInfo?
+    @Published var isUpdatingYTDLPFromBanner = false
+
     var isBusy: Bool { isFetchingFormats || isRunning }
 
     private let runner = ProcessRunner()
@@ -70,6 +80,32 @@ final class AppViewModel: ObservableObject {
         Task {
             ytdlpVersion = await YTDLPService.fetchVersion(runner: ProcessRunner())
         }
+    }
+
+    /// Fires both update checks independently and never awaits either —
+    /// callers (ContentView's launch `.task`) must not block on this.
+    /// Each check is separately silent-on-failure internally; nothing here
+    /// needs its own error handling.
+    func checkForUpdates() {
+        Task {
+            ytdlpUpdateInfo = await YTDLPService.checkForUpdate(runner: ProcessRunner())
+        }
+        Task {
+            appUpdateInfo = await AppUpdateService.checkForUpdate()
+        }
+    }
+
+    /// Runs `brew upgrade yt-dlp` from the update banner specifically (as
+    /// opposed to Settings' identical-in-spirit button) — kept as its own
+    /// method rather than reusing SettingsView's local one since that one
+    /// is deliberately self-contained/not wired to AppViewModel (see
+    /// CLAUDE.md's "SettingsView is deliberately self-contained" note).
+    func updateYTDLPFromBanner() async {
+        isUpdatingYTDLPFromBanner = true
+        _ = await ProcessRunner().run(path: Tool.brew, arguments: ["upgrade", "yt-dlp"], qos: .utility)
+        isUpdatingYTDLPFromBanner = false
+        ytdlpUpdateInfo = nil
+        checkYTDLPVersion()
     }
 
     private func presentActionableAlert(for rawOutput: String) {

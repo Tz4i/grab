@@ -749,6 +749,70 @@ already-verified "Update yt-dlp" section, so risk is low, but say so
 explicitly rather than implying it was screenshotted — consistent with
 this file's standing rule on that.
 
+## Update checking
+
+Two independent, non-blocking checks fire from `ContentView`'s launch
+`.task` via `AppViewModel.checkForUpdates()` — each spawns its own `Task`
+and neither is awaited, so a slow/offline network can't delay launch.
+Both render as dismissible banners (`updateBannersSection` in
+`ContentView.swift`, above the Formats section) and are session-only
+state (`AppViewModel.ytdlpUpdateInfo`/`appUpdateInfo`, not `@AppStorage`)
+— dismissing just sets the published value back to nil; a fresh launch
+re-checks and re-shows if still applicable, which is the point of a
+version nag.
+
+**yt-dlp update check** (`YTDLPService.checkForUpdate`): runs `brew
+outdated --json=v2 yt-dlp`. Verified the real JSON schema directly against
+this machine's Homebrew rather than assumed from docs — `{"formulae":
+[{"name", "installed_versions": [...], "current_version"}], "casks": []}`,
+empty `formulae` array when up to date. Homebrew sometimes prints a
+progress line ("checking for JSON API...") before the JSON body depending
+on cache state, so parsing finds the first `{` rather than assuming the
+whole captured stdout+stderr is pure JSON. Silent-on-failure throughout
+(brew missing, yt-dlp not installed, unparseable output all just return
+nil) — this is a best-effort launch check, never worth surfacing an error
+for. The banner's "Update" button calls the new `AppViewModel.
+updateYTDLPFromBanner()`, which runs `brew upgrade yt-dlp` — a separate
+method from `SettingsView`'s own identical-in-spirit update button rather
+than a shared call, because `SettingsView` is deliberately self-contained/
+not wired to `AppViewModel` (see that note further up this file).
+
+**App update check** (`AppUpdateService.checkForUpdate`): queries
+`https://api.github.com/repos/Tz4i/grab/releases/latest`, compares
+`tag_name` against `Bundle.main.infoDictionary["CFBundleShortVersionString"]`
+via a small shared `VersionCompare.isNewer` (plain dot-separated integer
+comparison, strips a leading `v`/`V`). Requires a `User-Agent` header —
+GitHub's API 403s without one. **Requires the `Tz4i/grab` repo to be
+public** — the unauthenticated REST API can't see releases on a private
+repo. The repo was flipped private → public this session specifically to
+make this feature work (confirmed via `gh repo view --json visibility`
+and a real `curl` against the releases endpoint before/after). Silent on
+any failure (offline, rate-limited, malformed JSON, 404) — same
+best-effort philosophy as the yt-dlp check.
+
+**Deliberately does not self-update**: the "View Release" button just
+opens the GitHub release page (`NSWorkspace.shared.open`) — no download,
+no replacing the running app bundle. Grab is unsigned/ad-hoc (see
+"Release & distribution" below); a self-replaced copy would be freshly
+quarantined by Gatekeeper and need the same `xattr -rc` workaround on
+every single update, which is a worse experience than a plain link. Don't
+add auto-download without revisiting that tradeoff first.
+
+**Verified for real, not just mocked**: at the time this was built, the
+live GitHub release tag (`v1.0.0`) and the running build's
+`MARKETING_VERSION` (`1.0.0`) were identical, and yt-dlp was genuinely up
+to date on this machine — so a real, unmocked launch producing *no*
+banners was itself a meaningful end-to-end pass (real network call, real
+`brew outdated`, real version comparison, all correctly concluding
+"nothing to show"). The banners actually rendering correctly (exact
+spec'd wording, Update/View Release buttons, dismiss ✕) was then verified
+via the same temporary mock-injection-into-`ContentView`'s-`.task`
+pattern used elsewhere in this file — with `viewModel.checkForUpdates()`
+itself commented out for that one test build, same reason as the
+dependency-sheet mocking earlier: the real check is a `Task` that isn't
+awaited, so without disabling it, it can complete *after* the injected
+mock and silently overwrite it.
+
 ## Release & distribution
 
 **This is a git repo now** (it wasn't for the first two sessions of work —
