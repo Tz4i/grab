@@ -1,9 +1,11 @@
 # Grab
 
 A native macOS SwiftUI app that wraps `yt-dlp` + `ffmpeg` to download YouTube
-video and optionally convert it to ProRes for After Effects. No third-party
-dependencies. macOS 14+, single `Window` scene, App Sandbox disabled
-(unsigned, personal build — shells out to Homebrew binaries).
+video and optionally convert it to ProRes or H.264 (MP4). No third-party
+dependencies bundled — shells out to Homebrew binaries (yt-dlp, ffmpeg,
+ffprobe, deno) at runtime, checked and guided-through on first launch if
+missing. macOS 14+, single `Window` scene, App Sandbox disabled (unsigned,
+ad-hoc distribution via GitHub Releases — see "Release & distribution").
 
 ## Layout
 
@@ -581,21 +583,23 @@ from a `Date()` captured when the ffmpeg phase starts) if `speed=` isn't
 present on a given line.
 
 **Color info is now probed after *every* successful download**, not just
-when ProRes conversion is on — moved out from behind the `guard
-convertToProRes` check specifically so the color-indicator badge has
-something to show even if you never convert. If conversion is on, the
-already-probed `ColorInfo` is reused for `conversionArguments` (no second
-ffprobe call) — same HDR/SDR decision, same ffmpeg args as before this
-change, just computed once instead of conditionally.
+when conversion is on — moved out from behind the conversion-mode check
+specifically so the color-indicator badge has something to show even if
+you never convert. If conversion is on (`conversionMode != .none`), the
+already-probed `ColorInfo` is reused for `conversionArguments`/
+`h264ConversionArguments` (no second ffprobe call) — same HDR/SDR
+decision, same ffmpeg args as before this change, just computed once
+instead of conditionally.
 
 **Delete-source-after-conversion**: only runs when `convertResult.exitCode
-== 0` (i.e. never deletes the source if ProRes conversion failed), deletes
-`inputURL` (the merged download, not the ProRes output) via
+== 0` (i.e. never deletes the source if conversion failed), deletes
+`inputURL` (the merged download, not the ProRes/H.264 output) via
 `FileManager.default.removeItem`, failure is logged but non-fatal.
 
 **Notifications** (`NotificationService.swift`): fires once per successful
-run — "Download Complete" if `convertToProRes` was off, "ProRes Conversion
-Complete" if it was on and conversion succeeded. No notification on
+run — "Download Complete" if `conversionMode == .none`, "ProRes
+Conversion Complete"/"H.264 Conversion Complete" (`modeName` in
+`runDownloadAndConvert`) if conversion was on and succeeded. No notification on
 failure (deliberate scope decision, not an oversight — extend
 `runDownloadAndConvert`'s failure branches if that's wanted later).
 Authorization is requested once via `.task` in `ContentView`'s root view;
@@ -952,9 +956,28 @@ file — no reason to track a generated artifact).
 **Distribution decision**: stays unsigned/ad-hoc (`CODE_SIGN_IDENTITY:
 "-"`), no paid Apple Developer ID, no notarization — this was an explicit
 user choice (asked directly), not a default/oversight. Packaged as a DMG
-via `scripts/release.sh` for GitHub Releases. GitHub repo itself starts
-**private**, with a documented intent to go **public under MIT** later
-(`LICENSE` file already added in anticipation of that, even while private).
+via `scripts/release.sh` for GitHub Releases.
+
+**GitHub repo visibility**: started **private**, flipped to **public**
+partway through this session (`gh repo edit --visibility public
+--accept-visibility-change-consequences`, confirmed with the user first)
+because the app-update check (see "Update checking" below) needs
+unauthenticated GitHub API access to releases, which doesn't work on a
+private repo. Already under MIT (`LICENSE` was added in anticipation of
+this before the flip even happened). If this repo ever needs to go
+private again, remember the app-update check will then silently find
+nothing (by design — it fails silent, not loud) rather than erroring
+visibly, so that regression could go unnoticed.
+
+**Release history**: `v1.0.0` (first release, ad-hoc DMG, established the
+process) → `v1.1.0` (dependency setup screen + disclaimers, yt-dlp/app
+update checking, H.264 conversion mode, window chrome translucency — see
+their respective sections above). The version-bump-then-release workflow
+(`project.yml`'s `MARKETING_VERSION` → `scripts/release.sh` →
+`git tag`/`gh release create`) was validated a second time end-to-end for
+v1.1.0 with no surprises, confirming the single-source-of-truth versioning
+fix from v1.0.0 (see "Versioning" below) holds up across repeated
+releases, not just the first one.
 
 **Dual-arch Homebrew support**: `Tools.swift` used to hardcode
 `/opt/homebrew/bin` (Apple-Silicon-only) for `yt-dlp`/`ffmpeg`/`ffprobe`/
@@ -1029,3 +1052,8 @@ reason — say so if asked, don't imply it was screenshotted.
   above. Revisit if the user later gets a paid Apple Developer ID.
 - No security-scoped bookmarks for the output folder — sandbox is off, so
   the plain `@AppStorage`-persisted path in `ContentView` is sufficient.
+- No in-app auto-update/self-replace — the app-update check only links to
+  the GitHub release page (see "Update checking"). Deliberate: unsigned/
+  ad-hoc means a self-replaced copy would be freshly quarantined by
+  Gatekeeper on every update, worse than a manual download. Revisit only
+  alongside the code-signing decision above, not independently.
