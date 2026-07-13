@@ -76,6 +76,85 @@ enum ProResTier: Int, CaseIterable, Identifiable {
     }
 }
 
+/// What happens to the file after download. `.none` keeps the downloaded
+/// file as-is; `.proRes`/`.h264` both run an ffmpeg conversion pass, with
+/// mode-specific settings (ProResTier / H264Quality) below.
+enum ConversionMode: String, CaseIterable, Identifiable {
+    case none, proRes, h264
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .none: return "None"
+        case .proRes: return "ProRes"
+        case .h264: return "H.264 (MP4)"
+        }
+    }
+
+    /// Accurate tradeoff copy for the picker — deliberately does not call
+    /// H.264 suitable "for After Effects"; ProRes is the edit-friendly
+    /// format, H.264 trades edit performance for file size and
+    /// playback-anywhere compatibility.
+    var tradeoffDescription: String? {
+        switch self {
+        case .none:
+            return nil
+        case .proRes:
+            return "Best for editing. Scrubs smoothly in After Effects and handles color correction well. "
+                + "Large files."
+        case .h264:
+            return "Much smaller files. Playable anywhere. Slower to scrub and edit — fine for viewing or "
+                + "light editing, less ideal for heavy compositing or grading."
+        }
+    }
+}
+
+/// A simple quality picker for H.264 — deliberately doesn't expose raw
+/// encoder flags (CRF/bitrate) in the UI; see FFmpegService.H264Quality's
+/// crf/hardwareBitrate for how each tier maps to actual encoder settings.
+enum H264Quality: Int, CaseIterable, Identifiable {
+    case high = 0
+    case medium = 1
+    case low = 2
+
+    var id: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .high: return "High"
+        case .medium: return "Medium"
+        case .low: return "Low"
+        }
+    }
+
+    /// libx264 constant-quality value (lower = higher quality). Standard
+    /// x264 convention: ~18 is visually near-lossless, ~23 is x264's own
+    /// default/"good enough" middle ground, ~28 is noticeably compressed
+    /// but still watchable.
+    var crf: Int {
+        switch self {
+        case .high: return 18
+        case .medium: return 23
+        case .low: return 28
+        }
+    }
+
+    /// h264_videotoolbox has no CRF/quality AVOption on this ffmpeg build
+    /// (verified via `ffmpeg -h encoder=h264_videotoolbox` — only
+    /// profile/level/coder/etc. are exposed, no quality or bitrate control
+    /// option), so the hardware path targets a flat bitrate instead.
+    /// Deliberately not resolution-scaled — kept to the spec's "simple
+    /// quality picker," not adaptive to source resolution.
+    var hardwareBitrate: String {
+        switch self {
+        case .high: return "12M"
+        case .medium: return "6M"
+        case .low: return "2500k"
+        }
+    }
+}
+
 enum CookieBrowser: String, CaseIterable, Identifiable {
     case none, safari, chrome, firefox, brave, edge
 

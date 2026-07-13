@@ -28,9 +28,12 @@ Grab/Sources/
                               (classifyFailure/YTDLPFailureKind), version
                               check (fetchVersion)
   FFmpegService.swift        ffprobe color probe, SDR/HDR conversion arg
-                              builder, duration probe + time=/speed=
+                              builders for both ProRes and H.264 (shared
+                              videoFilter() helper for the HDR/downscale
+                              chain), duration probe + time=/speed=
                               progress-line parsers, ETA formatter,
-                              hardware/software ProRes encoder selection
+                              hardware/software encoder selection for both
+                              conversion modes
   ProcessRunner.swift         Process wrapper: async/await, streaming
                               stdout+stderr, cancellation, PATH injection,
                               final-drain-on-exit (see gotcha below)
@@ -40,8 +43,9 @@ Grab/Sources/
                               + the pre-existing missing-tool check used by
                               runtime alerts
   Models.swift                 VideoFormat (+ resolutionPixels/Height),
-                              ProResTier, GrabError, CookieBrowser,
-                              ActionableAlert (+ its .make(for:) factory)
+                              ProResTier, ConversionMode, H264Quality,
+                              GrabError, CookieBrowser, ActionableAlert
+                              (+ its .make(for:) factory)
   NotificationService.swift    UNUserNotificationCenter wrapper — posts a
                               local notification on job completion, with a
                               "Reveal in Finder" notification action (needs
@@ -330,6 +334,20 @@ fine, the UI already falls back to an indeterminate spinner whenever
 holds its last known percentage rather than snapping to exactly 100 for an
 instant before the phase ends anyway.
 
+**Conversion mode** (`Models.swift`'s `ConversionMode`: `.none`/`.proRes`/
+`.h264`): the Output section's old single "Convert to ProRes" toggle is
+now a three-way picker — `@AppStorage("conversionMode")` replaced
+`convertToProRes`/`proResTier` as the persisted keys (old
+`convertToProRes` UserDefaults values are simply abandoned, no migration
+— this app has no real users yet). `AppViewModel.startDownload`/
+`retryWithBestQualitySelector`/`beginDownload`/`runDownloadAndConvert` all
+take `conversionMode: ConversionMode, proResTier: ProResTier, h264Quality:
+H264Quality` instead of the old `convertToProRes: Bool, tier: ProResTier`
+pair; `runDownloadAndConvert`'s tail branches on `conversionMode == .h264`
+(`isH264`) to pick encoder names/output URL/log wording, everything else
+(HDR detection, duration probe, hardware→software fallback, delete-source,
+notification) is shared, unchanged control flow between the two modes.
+
 **ProRes conversion** (`FFmpegService`): `ffprobe -show_entries
 stream=color_transfer,color_primaries -of json` on the downloaded file.
 HDR iff `color_transfer == "smpte2084"` or `color_primaries` contains
@@ -338,6 +356,55 @@ path. The exact HDR tonemap filter chain and SDR path are spec'd by the
 user and encoded verbatim in `FFmpegService.conversionArguments` — don't
 tweak the filter string without being asked, After Effects compatibility
 was the reason for these specific flags.
+
+**H.264 conversion** (`FFmpegService.h264ConversionArguments`): added
+alongside ProRes as a second conversion mode, output `.mp4` with `-c:a
+aac`. Shares the *exact same* HDR-detection and tone-map filter chain as
+ProRes — factored out into a private `FFmpegService.videoFilter(colorInfo:
+downscale4K:)` helper this session so neither path can drift from the
+other; downscale-to-4K works identically for both. UI copy is
+deliberately accurate about the editing tradeoff (ProRes: "scrubs
+smoothly... large files"; H.264: "much smaller... slower to scrub...
+less ideal for heavy compositing" — see `ConversionMode.
+tradeoffDescription`) — H.264 is never described as suitable "for After
+Effects," per explicit instruction.
+
+Rate control is **asymmetric between hardware and software**, unlike
+ProRes's "identical flags, only -c:v differs" pattern — verified via
+`ffmpeg -h encoder=h264_videotoolbox`, which exposes no CRF/quality
+AVOption at all on this ffmpeg build (only profile/level/coder/etc.), so:
+- Hardware (`h264_videotoolbox`): flat target bitrate via `-b:v`
+  (`H264Quality.hardwareBitrate` — High=12M, Medium=6M, Low=2500k, not
+  resolution-scaled, deliberately kept to the spec's "simple quality
+  picker").
+- Software (`libx264`): standard `-crf` quality control
+  (`H264Quality.crf` — High=18, Medium=23, Low=28, the conventional x264
+  quality-to-CRF mapping).
+
+Neither raw CRF/bitrate numbers nor encoder names are exposed in the UI —
+just High/Medium/Low, per "don't expose raw encoder flags."
+
+**Verified for real, full pipeline** (not just argument construction):
+downloaded the "Me at the zoo" test clip through the actual running app
+(temporarily driving `AppViewModel.startDownload` from `ContentView`'s
+`.task` with the mock-injection-then-revert pattern used elsewhere in
+this file) with `conversionMode: .h264, h264Quality: .low`. Real yt-dlp
+download → real ffprobe SDR detection → real `h264_videotoolbox` hardware
+encode (`-b:v 2500k`, correctly matching the Low tier) → completion →
+"Reveal in Finder" appeared. Confirmed the actual output file via
+`ffprobe`: `codec_name=h264` (video) + `codec_name=aac` (audio), exactly
+as spec'd. Also separately verified via the standalone harness: both
+`h264_videotoolbox` and `libx264` (forced software) complete successfully
+on real downloaded SDR content, output re-probed and confirmed
+h264+aac either way. Test files were deleted from `~/Downloads` after
+verification, not left behind.
+
+**HDR path not live-testable here, same as ProRes**: `h264ConversionArguments`
+reuses the same `zscale`-based filter chain, so it inherits the identical
+`--enable-libzimg`-missing limitation described below — verified by
+argument construction only (a synthetic HDR `ColorInfo`, checked the
+built `-vf` string matches exactly, with and without hardware/downscale),
+not by actually running it through this machine's ffmpeg.
 
 **This machine's Homebrew ffmpeg (8.1.1) was built without `--enable-libzimg`,
 so the `zscale` filter used in the HDR tone-map chain doesn't exist here**

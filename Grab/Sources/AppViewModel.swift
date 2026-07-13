@@ -163,8 +163,9 @@ final class AppViewModel: ObservableObject {
 
     func startDownload(
         outputDir: URL,
-        convertToProRes: Bool,
-        tier: ProResTier,
+        conversionMode: ConversionMode,
+        proResTier: ProResTier,
+        h264Quality: H264Quality,
         downscale4K: Bool,
         deleteSourceAfterConversion: Bool = false,
         useHardwareAcceleration: Bool = true,
@@ -179,8 +180,9 @@ final class AppViewModel: ObservableObject {
         beginDownload(
             formatSelector: selector,
             outputDir: outputDir,
-            convertToProRes: convertToProRes,
-            tier: tier,
+            conversionMode: conversionMode,
+            proResTier: proResTier,
+            h264Quality: h264Quality,
             downscale4K: downscale4K,
             deleteSourceAfterConversion: deleteSourceAfterConversion,
             useHardwareAcceleration: useHardwareAcceleration,
@@ -195,8 +197,9 @@ final class AppViewModel: ObservableObject {
     /// in favor of yt-dlp's own adaptive best-video+best-audio selector.
     func retryWithBestQualitySelector(
         outputDir: URL,
-        convertToProRes: Bool,
-        tier: ProResTier,
+        conversionMode: ConversionMode,
+        proResTier: ProResTier,
+        h264Quality: H264Quality,
         downscale4K: Bool,
         deleteSourceAfterConversion: Bool,
         useHardwareAcceleration: Bool,
@@ -207,8 +210,9 @@ final class AppViewModel: ObservableObject {
         beginDownload(
             formatSelector: YTDLPService.fallbackFormatSelector,
             outputDir: outputDir,
-            convertToProRes: convertToProRes,
-            tier: tier,
+            conversionMode: conversionMode,
+            proResTier: proResTier,
+            h264Quality: h264Quality,
             downscale4K: downscale4K,
             deleteSourceAfterConversion: deleteSourceAfterConversion,
             useHardwareAcceleration: useHardwareAcceleration,
@@ -221,8 +225,9 @@ final class AppViewModel: ObservableObject {
     private func beginDownload(
         formatSelector: String,
         outputDir: URL,
-        convertToProRes: Bool,
-        tier: ProResTier,
+        conversionMode: ConversionMode,
+        proResTier: ProResTier,
+        h264Quality: H264Quality,
         downscale4K: Bool,
         deleteSourceAfterConversion: Bool,
         useHardwareAcceleration: Bool,
@@ -233,7 +238,7 @@ final class AppViewModel: ObservableObject {
         let trimmedURL = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedURL.isEmpty else { return }
 
-        let relevantNames: Set<String> = convertToProRes ? ["yt-dlp", "ffmpeg", "ffprobe"] : ["yt-dlp"]
+        let relevantNames: Set<String> = conversionMode != .none ? ["yt-dlp", "ffmpeg", "ffprobe"] : ["yt-dlp"]
         if let missing = Tool.missingTools().first(where: { relevantNames.contains($0.name) }) {
             missingToolAlert = missing
             return
@@ -252,8 +257,9 @@ final class AppViewModel: ObservableObject {
                 url: trimmedURL,
                 formatSelector: formatSelector,
                 outputDir: outputDir,
-                convertToProRes: convertToProRes,
-                tier: tier,
+                conversionMode: conversionMode,
+                proResTier: proResTier,
+                h264Quality: h264Quality,
                 downscale4K: downscale4K,
                 deleteSourceAfterConversion: deleteSourceAfterConversion,
                 useHardwareAcceleration: useHardwareAcceleration,
@@ -272,8 +278,9 @@ final class AppViewModel: ObservableObject {
         url: String,
         formatSelector: String,
         outputDir: URL,
-        convertToProRes: Bool,
-        tier: ProResTier,
+        conversionMode: ConversionMode,
+        proResTier: ProResTier,
+        h264Quality: H264Quality,
         downscale4K: Bool,
         deleteSourceAfterConversion: Bool,
         useHardwareAcceleration: Bool,
@@ -353,7 +360,7 @@ final class AppViewModel: ObservableObject {
         appendLog("\nColor metadata: \(colorInfo.summary)\n")
         detectedColorInfo = colorInfo
 
-        guard convertToProRes else {
+        guard conversionMode != .none else {
             lastOutputURL = inputURL
             NotificationService.postCompletion(
                 title: "Download Complete",
@@ -363,7 +370,11 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let outputURL = FFmpegService.proResOutputURL(for: inputURL)
+        let isH264 = conversionMode == .h264
+        let modeName = isH264 ? "H.264" : "ProRes"
+        let outputURL = isH264
+            ? FFmpegService.h264OutputURL(for: inputURL)
+            : FFmpegService.proResOutputURL(for: inputURL)
         let usedHDRPath = colorInfo.isHDR
 
         appendLog(usedHDRPath
@@ -371,7 +382,7 @@ final class AppViewModel: ObservableObject {
             : "Detected SDR (bt709 / unspecified) — using direct SDR path.\n")
         if usedHDRPath && useHardwareAcceleration {
             appendLog("Note: the HDR tone-map filter chain (zscale/tonemap) runs on the CPU regardless of "
-                + "hardware acceleration — only the final ProRes encode step uses the hardware encoder.\n")
+                + "hardware acceleration — only the final \(modeName) encode step uses the hardware encoder.\n")
         }
 
         // Best-effort duration probe purely for the progress bar; a failure
@@ -383,21 +394,34 @@ final class AppViewModel: ObservableObject {
             sourceDuration = duration
         }
 
-        // Tries prores_videotoolbox or prores_ks depending on `useHardware`.
-        // Filter chain / tier are identical either way — only -c:v differs,
-        // since both encoders use the same -profile:v numbering (0...4).
+        // Tries the hardware encoder (prores_videotoolbox / h264_videotoolbox)
+        // or its software counterpart (prores_ks / libx264) depending on
+        // `useHardware`. Filter chain is identical either way for both
+        // modes; only the rate-control flags differ between H.264's
+        // hardware (bitrate) and software (CRF) paths -- see
+        // FFmpegService.h264ConversionArguments.
         func attemptConversion(useHardware: Bool) async -> ProcessResult {
-            let (args, _) = FFmpegService.conversionArguments(
-                inputURL: inputURL, outputURL: outputURL, colorInfo: colorInfo,
-                tier: tier, downscale4K: downscale4K, useHardwareEncoder: useHardware
-            )
-            let encoderName = useHardware ? FFmpegService.hardwareEncoder : FFmpegService.softwareEncoder
+            let args: [String]
+            let encoderName: String
+            if isH264 {
+                (args, _) = FFmpegService.h264ConversionArguments(
+                    inputURL: inputURL, outputURL: outputURL, colorInfo: colorInfo,
+                    quality: h264Quality, downscale4K: downscale4K, useHardwareEncoder: useHardware
+                )
+                encoderName = useHardware ? FFmpegService.h264HardwareEncoder : FFmpegService.h264SoftwareEncoder
+            } else {
+                (args, _) = FFmpegService.conversionArguments(
+                    inputURL: inputURL, outputURL: outputURL, colorInfo: colorInfo,
+                    tier: proResTier, downscale4K: downscale4K, useHardwareEncoder: useHardware
+                )
+                encoderName = useHardware ? FFmpegService.hardwareEncoder : FFmpegService.softwareEncoder
+            }
 
             progressFraction = nil
             progressETA = nil
             progressLabel = usedHDRPath
-                ? "Converting to ProRes (\(encoderName), HDR tone-map)…"
-                : "Converting to ProRes (\(encoderName))…"
+                ? "Converting to \(modeName) (\(encoderName), HDR tone-map)…"
+                : "Converting to \(modeName) (\(encoderName))…"
             appendLog("\n$ ffmpeg \(args.joined(separator: " "))\n")
 
             let conversionStart = Date()
@@ -425,15 +449,17 @@ final class AppViewModel: ObservableObject {
         var convertResult = await attemptConversion(useHardware: useHardwareAcceleration)
 
         if useHardwareAcceleration && convertResult.exitCode != 0 {
+            let hardwareEncoder = isH264 ? FFmpegService.h264HardwareEncoder : FFmpegService.hardwareEncoder
+            let softwareEncoder = isH264 ? FFmpegService.h264SoftwareEncoder : FFmpegService.softwareEncoder
             appendLog(
-                "\nHardware encoder (\(FFmpegService.hardwareEncoder)) failed (exit code \(convertResult.exitCode))"
-                + " — falling back to software encoder (\(FFmpegService.softwareEncoder)).\n"
+                "\nHardware encoder (\(hardwareEncoder)) failed (exit code \(convertResult.exitCode))"
+                + " — falling back to software encoder (\(softwareEncoder)).\n"
             )
             convertResult = await attemptConversion(useHardware: false)
         }
 
         if convertResult.exitCode == 0 {
-            appendLog("\nProRes conversion complete: \(outputURL.path)\n")
+            appendLog("\n\(modeName) conversion complete: \(outputURL.path)\n")
 
             if deleteSourceAfterConversion {
                 do {
@@ -446,13 +472,13 @@ final class AppViewModel: ObservableObject {
 
             lastOutputURL = outputURL
             NotificationService.postCompletion(
-                title: "ProRes Conversion Complete",
+                title: "\(modeName) Conversion Complete",
                 body: "\(outputURL.lastPathComponent) is ready.",
                 revealURL: outputURL
             )
         } else {
             appendLog("\nffmpeg exited with code \(convertResult.exitCode).\n")
-            lastError = "ProRes conversion failed (see log)."
+            lastError = "\(modeName) conversion failed (see log)."
         }
     }
 

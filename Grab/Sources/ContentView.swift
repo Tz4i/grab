@@ -21,8 +21,9 @@ struct ContentView: View {
 
     @State private var showSetupSheet = false
 
-    @AppStorage("convertToProRes") private var convertToProRes = false
+    @AppStorage("conversionMode") private var conversionMode: ConversionMode = .none
     @AppStorage("proResTier") private var proResTier: ProResTier = .hq
+    @AppStorage("h264Quality") private var h264Quality: H264Quality = .medium
     @AppStorage("downscale4K") private var downscale4K = false
     @AppStorage("deleteSourceAfterConversion") private var deleteSourceAfterConversion = false
     @AppStorage("useHardwareAcceleration") private var useHardwareAcceleration = true
@@ -109,8 +110,9 @@ struct ContentView: View {
                     case .retryBestQuality:
                         viewModel.retryWithBestQualitySelector(
                             outputDir: outputDirectoryURL,
-                            convertToProRes: convertToProRes,
-                            tier: proResTier,
+                            conversionMode: conversionMode,
+                            proResTier: proResTier,
+                            h264Quality: h264Quality,
                             downscale4K: downscale4K,
                             deleteSourceAfterConversion: deleteSourceAfterConversion,
                             useHardwareAcceleration: useHardwareAcceleration,
@@ -177,8 +179,9 @@ struct ContentView: View {
             Button {
                 viewModel.startDownload(
                     outputDir: outputDirectoryURL,
-                    convertToProRes: convertToProRes,
-                    tier: proResTier,
+                    conversionMode: conversionMode,
+                    proResTier: proResTier,
+                    h264Quality: h264Quality,
                     downscale4K: downscale4K,
                     deleteSourceAfterConversion: deleteSourceAfterConversion,
                     useHardwareAcceleration: useHardwareAcceleration,
@@ -447,25 +450,58 @@ struct ContentView: View {
                 }
             }
 
-            Section("ProRes") {
-                Toggle("Convert to ProRes after download", isOn: $convertToProRes)
+            Section("Conversion") {
+                Picker("Convert to", selection: $conversionMode) {
+                    ForEach(ConversionMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
 
-                if convertToProRes {
+                if let description = conversionMode.tradeoffDescription {
+                    Text(description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                switch conversionMode {
+                case .none:
+                    EmptyView()
+                case .proRes:
                     Picker("Tier", selection: $proResTier) {
                         ForEach(ProResTier.allCases) { tier in
                             Text(tier.label).tag(tier)
                         }
                     }
+                case .h264:
+                    Picker("Quality", selection: $h264Quality) {
+                        ForEach(H264Quality.allCases) { quality in
+                            Text(quality.label).tag(quality)
+                        }
+                    }
+                }
+
+                if conversionMode != .none {
                     Toggle("Downscale to 4K (3840×2160)", isOn: $downscale4K)
                     Toggle("Delete source file after conversion", isOn: $deleteSourceAfterConversion)
                     Toggle("Use hardware acceleration", isOn: $useHardwareAcceleration)
-                        .help("Uses the Mac's hardware ProRes encoder (prores_videotoolbox) when available, automatically falling back to software encoding (prores_ks) if it fails.")
+                        .help(hardwareAccelerationHelpText)
                 }
             }
         }
         .formStyle(.grouped)
         .fixedSize(horizontal: false, vertical: true)
         .disabled(viewModel.isBusy)
+    }
+
+    private var hardwareAccelerationHelpText: String {
+        switch conversionMode {
+        case .h264:
+            return "Uses the Mac's hardware H.264 encoder (h264_videotoolbox) when available, automatically "
+                + "falling back to software encoding (libx264) if it fails."
+        case .proRes, .none:
+            return "Uses the Mac's hardware ProRes encoder (prores_videotoolbox) when available, automatically "
+                + "falling back to software encoding (prores_ks) if it fails."
+        }
     }
 
     // MARK: - Status / progress / log
@@ -587,7 +623,7 @@ struct SettingsView: View {
                 Text("Authentication")
             } footer: {
                 Text("Cookie extraction from your browser is the only sign-in method Grab supports — it "
-                    + "never asks for your YouTube username or password.")
+                    + "never asks for your YouTube username or password. Theres also a good chance it will NOT work first try enabling full disk access if it doesnt work, Either use a VPN to switch your virtual location or just try again later")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
