@@ -8,7 +8,7 @@ import Foundation
 /// Apple Silicon path is reported (arbitrarily, for a single stable path in
 /// error messages) and `missingTools()` will flag it.
 enum Tool {
-    static let searchPrefixes = ["/opt/homebrew/bin", "/usr/local/bin"]
+    static let searchPrefixes = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
 
     private static func resolve(_ name: String) -> String {
         for prefix in searchPrefixes {
@@ -23,9 +23,18 @@ enum Tool {
     static let ytdlp = resolve("yt-dlp")
     static let ffmpeg = resolve("ffmpeg")
     static let ffprobe = resolve("ffprobe")
-    /// Only used by the optional "Update yt-dlp" button in Settings — not
-    /// part of `missingTools()` since brew isn't required for core
-    /// download/convert functionality.
+    /// yt-dlp shells out to this itself to solve YouTube's JS playback
+    /// challenges. Grab never launches it directly (no `Tool.deno` call
+    /// site anywhere), so it can't be part of the ProcessRunner-level
+    /// missingTools() check below — but it's still surfaced proactively in
+    /// the dependency setup screen (see Dependencies.swift), since without
+    /// it some downloads fail with a confusing yt-dlp error instead of an
+    /// obvious "missing tool" one.
+    static let deno = resolve("deno")
+    /// Only used by the optional "Update yt-dlp" button in Settings and by
+    /// the dependency setup screen's "Install missing tools" — not part of
+    /// `missingTools()` since brew isn't required for core download/convert
+    /// functionality.
     static let brew = resolve("brew")
 
     /// Directory containing the resolved `ffmpeg` binary, for yt-dlp's

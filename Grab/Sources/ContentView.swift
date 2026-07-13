@@ -3,10 +3,23 @@ import AppKit
 
 struct ContentView: View {
     @StateObject private var viewModel = AppViewModel()
+    @StateObject private var dependencySetup = DependencySetupViewModel()
     @Environment(\.openSettings) private var openSettings
 
     @AppStorage("outputDirectoryPath") private var outputDirectoryPath: String =
         FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path ?? NSHomeDirectory()
+
+    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @AppStorage("hasAcknowledgedDisclaimer") private var hasAcknowledgedDisclaimer = false
+    /// Fire-once cross-scene signal: Settings' Debug section sets this to
+    /// true to force the setup sheet open for testing; ContentView catches
+    /// the flip via .onChange and immediately resets it back to false. Same
+    /// pattern this codebase already uses for `cookiesFromBrowser`/
+    /// `showLogPanel` — a shared @AppStorage key declared independently in
+    /// both scenes, since there's no @EnvironmentObject bridging them.
+    @AppStorage("debugForceShowSetupScreen") private var debugForceShowSetupScreen = false
+
+    @State private var showSetupSheet = false
 
     @AppStorage("convertToProRes") private var convertToProRes = false
     @AppStorage("proResTier") private var proResTier: ProResTier = .hq
@@ -46,6 +59,25 @@ struct ContentView: View {
         .task {
             NotificationService.requestAuthorizationIfNeeded()
             viewModel.checkYTDLPVersion()
+            await dependencySetup.refresh()
+            if !hasCompletedOnboarding || !dependencySetup.missingRequired.isEmpty {
+                showSetupSheet = true
+            }
+        }
+        .onChange(of: debugForceShowSetupScreen) { _, forced in
+            guard forced else { return }
+            showSetupSheet = true
+            debugForceShowSetupScreen = false
+        }
+        .sheet(isPresented: $showSetupSheet) {
+            DependencySetupView(
+                viewModel: dependencySetup,
+                hasAcknowledgedDisclaimer: $hasAcknowledgedDisclaimer,
+                onContinue: {
+                    hasCompletedOnboarding = true
+                    showSetupSheet = false
+                }
+            )
         }
         .alert(
             "Missing tool",
@@ -462,6 +494,9 @@ struct ContentView: View {
 struct SettingsView: View {
     @AppStorage("showLogPanel") private var showLogPanel = true
     @AppStorage("cookiesFromBrowser") private var cookiesFromBrowser: CookieBrowser = .none
+    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @AppStorage("hasAcknowledgedDisclaimer") private var hasAcknowledgedDisclaimer = false
+    @AppStorage("debugForceShowSetupScreen") private var debugForceShowSetupScreen = false
 
     @State private var isUpdatingYTDLP = false
     @State private var updateResult: String?
@@ -516,6 +551,25 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
+            }
+
+            Section {
+                Button("Show first-run setup screen") {
+                    debugForceShowSetupScreen = true
+                }
+                Button("Reset first-run state") {
+                    hasCompletedOnboarding = false
+                    hasAcknowledgedDisclaimer = false
+                }
+            } header: {
+                Text("Debug")
+            } footer: {
+                Text("\"Show first-run setup screen\" forces the setup sheet open regardless of dependency "
+                    + "state or prior acknowledgement, for testing. \"Reset first-run state\" clears the "
+                    + "onboarding-completed and disclaimer-acknowledged flags so the next launch behaves like "
+                    + "a fresh install.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
         }
         .formStyle(.grouped)
