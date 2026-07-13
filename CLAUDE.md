@@ -1166,10 +1166,13 @@ visibly, so that regression could go unnoticed.
 **Release history**: `v1.0.0` (first release, ad-hoc DMG, established the
 process) → `v1.1.0` (dependency setup screen + disclaimers, yt-dlp/app
 update checking, H.264 conversion mode, window chrome translucency — see
-their respective sections above). The version-bump-then-release workflow
-(`project.yml`'s `MARKETING_VERSION` → `scripts/release.sh` →
-`git tag`/`gh release create`) was validated a second time end-to-end for
-v1.1.0 with no surprises, confirming the single-source-of-truth versioning
+their respective sections above) → `v1.1.1` (patch: log-pane UI-overflow
+fix + disk-full retry-loop fix — see "Log buffer capping/throttling" and
+"Retry safety / disk-space handling" above; no new user-facing features,
+hence a patch bump rather than minor). The version-bump-then-release
+workflow (`project.yml`'s `MARKETING_VERSION` → `scripts/release.sh` →
+`git tag`/`gh release create`) was validated a third time end-to-end for
+v1.1.1 with no surprises, confirming the single-source-of-truth versioning
 fix from v1.0.0 (see "Versioning" below) holds up across repeated
 releases, not just the first one.
 
