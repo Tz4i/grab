@@ -1,0 +1,7 @@
+.DS_Store
+Grab.xcodeproj/
+DerivedData/
+build/
+*.dmg
+*.xcuserstate
+xcuserdata/
