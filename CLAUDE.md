@@ -1635,10 +1635,24 @@ pre-selected by default, per-mode window sizing — see "Video metadata
 display" and "Basic / Advanced mode" above; real new user-facing
 features, hence minor rather than patch). The version-bump-then-release
 workflow (`project.yml`'s `MARKETING_VERSION` → `scripts/release.sh` →
-`git tag`/`gh release create`) was validated a third time end-to-end for
-v1.1.1 with no surprises, confirming the single-source-of-truth versioning
+`git tag`/`gh release create`) was validated a fourth time end-to-end for
+v1.2.0 with no surprises, confirming the single-source-of-truth versioning
 fix from v1.0.0 (see "Versioning" below) holds up across repeated
 releases, not just the first one.
+
+**A commit gap existed between v1.1.1 and v1.2.0**: several sessions'
+worth of work (Basic mode's ProRes tier picker/delete-source toggle,
+"Best available" pre-selection, per-mode window sizing, then the video
+metadata feature) had accumulated as uncommitted changes in the working
+tree — `git status` showed them all as modified/untracked at once, with
+no way to tell which session touched what after the fact. All of it was
+already fully documented in this file from when it was originally built,
+and the working tree built and ran correctly, so it was committed as one
+combined commit rather than split apart. If this happens again, don't try
+to reconstruct a per-session commit history retroactively — just verify
+the working tree still builds/behaves as documented and commit it as-is;
+CLAUDE.md's own sectioning is the record of what changed and why, not the
+commit boundaries.
 
 **Dual-arch Homebrew support**: `Tools.swift` used to hardcode
 `/opt/homebrew/bin` (Apple-Silicon-only) for `yt-dlp`/`ffmpeg`/`ffprobe`/
