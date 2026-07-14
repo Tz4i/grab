@@ -56,6 +56,33 @@ enum FFmpegService {
         }
     }
 
+    /// Reads back the container-level video codec tag (FourCC, e.g. `apcn`
+    /// for ProRes 422, `apch` for 422 HQ) from a just-produced output file —
+    /// used to confirm the tier->tag mapping actually holds for real
+    /// (`ffmpeg -profile:v <n>` selects the encoder profile; the FourCC
+    /// written into the `.mov` is a separate thing ffmpeg derives from it,
+    /// so this is verifying the whole pipeline end-to-end, not just the
+    /// argument we passed in).
+    static func probeCodecTag(fileURL: URL, runner: ProcessRunner) async -> Result<String, GrabError> {
+        let arguments = [
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_tag_string",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            fileURL.path
+        ]
+        let result = await runner.run(path: Tool.ffprobe, arguments: arguments, qos: .userInitiated)
+        guard result.exitCode == 0 else {
+            let message = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .failure(GrabError(message: message.isEmpty ? "ffprobe exited with code \(result.exitCode)" : message))
+        }
+        let trimmed = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return .failure(GrabError(message: "ffprobe returned an empty codec tag"))
+        }
+        return .success(trimmed)
+    }
+
     // MARK: - ProRes conversion
 
     private static let hdrToneMapFilter =

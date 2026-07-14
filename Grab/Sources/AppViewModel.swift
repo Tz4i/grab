@@ -5,6 +5,12 @@ import Combine
 final class AppViewModel: ObservableObject {
     @Published var urlString: String = ""
     @Published var formats: [VideoFormat] = []
+    /// The fetched video's title/thumbnail/duration/channel — populated by
+    /// the same `-J` call that fetches `formats` (see YTDLPService.
+    /// fetchFormats). Deliberately not cleared by `beginDownload`, so the
+    /// title/thumbnail stay visible through the download and conversion
+    /// phases, confirming which video the progress bar refers to.
+    @Published var videoMetadata: VideoMetadata?
     @Published var selectedVideoID: String?
     @Published var selectedAudioID: String?
 
@@ -193,15 +199,31 @@ final class AppViewModel: ObservableObject {
     // MARK: - Fetch formats
 
     func fetchFormats(cookiesFromBrowser: CookieBrowser) {
+        Task { await performFetchFormats(cookiesFromBrowser: cookiesFromBrowser) }
+    }
+
+    /// Same fetch as the Advanced-mode toolbar button above, but awaitable.
+    /// Basic mode's single "Download" action needs to know exactly when
+    /// the silent background fetch finishes so it can open the
+    /// resolution-picker sheet (see CLAUDE.md's "Basic mode flow" —
+    /// "Fetch formats silently in the background — no separate 'Fetch
+    /// Formats' step").
+    @discardableResult
+    func fetchFormatsAwaiting(cookiesFromBrowser: CookieBrowser) async -> Bool {
+        await performFetchFormats(cookiesFromBrowser: cookiesFromBrowser)
+    }
+
+    private func performFetchFormats(cookiesFromBrowser: CookieBrowser) async -> Bool {
         let trimmedURL = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedURL.isEmpty else { return }
+        guard !trimmedURL.isEmpty else { return false }
 
         if let missing = Tool.missingTools().first(where: { $0.name == "yt-dlp" }) {
             missingToolAlert = missing
-            return
+            return false
         }
 
         formats = []
+        videoMetadata = nil
         selectedVideoID = nil
         selectedAudioID = nil
         lastError = nil
@@ -210,32 +232,39 @@ final class AppViewModel: ObservableObject {
         progressFraction = nil
         progressETA = nil
         isFetchingFormats = true
-        progressLabel = "Fetching formats…"
-        appendLog("$ yt-dlp -F --no-warnings \"\(trimmedURL)\"\n")
+        progressLabel = "Fetching video info…"
+        appendLog("$ yt-dlp -J --no-playlist --no-warnings \"\(trimmedURL)\"\n")
 
-        Task {
-            let result = await YTDLPService.fetchFormats(
-                url: trimmedURL,
-                cookiesFromBrowser: cookiesFromBrowser,
-                runner: runner,
-                onOutput: streamHandler()
-            )
-            isFetchingFormats = false
-            progressLabel = ""
+        // Deliberately not streamed into the log via streamHandler() — the
+        // -J call's whole stdout is one JSON blob (tens of KB), not
+        // line-oriented progress output like -F's table or a download's
+        // [download] lines, so dumping it into the log would just be noise.
+        let result = await YTDLPService.fetchFormats(
+            url: trimmedURL,
+            cookiesFromBrowser: cookiesFromBrowser,
+            runner: runner,
+            onOutput: { _ in }
+        )
+        isFetchingFormats = false
+        progressLabel = ""
 
-            switch result {
-            case .success(let fetched):
-                formats = fetched
-                selectedVideoID = fetched.first(where: { !$0.isAudioOnly })?.id
-                selectedAudioID = fetched.first(where: { $0.isAudioOnly })?.id
-                appendLog("\nFound \(fetched.count) format(s).\n")
-            case .failure(let error):
-                appendLog("\nyt-dlp failed:\n\(error.message)\n")
-                lastError = error.message
-                presentActionableAlert(for: error.message)
-            }
-            flushLogNow()
+        let success: Bool
+        switch result {
+        case .success(let fetched):
+            videoMetadata = fetched.metadata
+            formats = fetched.formats
+            selectedVideoID = fetched.formats.first(where: { !$0.isAudioOnly })?.id
+            selectedAudioID = fetched.formats.first(where: { $0.isAudioOnly })?.id
+            appendLog("\nFound \"\(fetched.metadata.title)\" — \(fetched.formats.count) format(s).\n")
+            success = true
+        case .failure(let error):
+            appendLog("\nyt-dlp failed:\n\(error.message)\n")
+            lastError = error.message
+            presentActionableAlert(for: error.message)
+            success = false
         }
+        flushLogNow()
+        return success
     }
 
     // MARK: - Download + convert
@@ -271,35 +300,79 @@ final class AppViewModel: ObservableObject {
         )
     }
 
-    /// Entry point for the 403 alert's "Retry with Best-Quality Auto-Select"
-    /// button — bypasses the current video/audio format selection entirely
-    /// in favor of yt-dlp's own adaptive best-video+best-audio selector.
-    func retryWithBestQualitySelector(
+    /// Basic mode's single entry point: hands a `BasicDownloadPlan` (built
+    /// by `BasicModeService.plan` from the user's resolution + ProRes
+    /// choice in the picker sheet) to the exact same engine Advanced mode
+    /// uses. Not a second implementation — just a different way of
+    /// arriving at `formatSelector`/`conversionMode`/`h264Quality`.
+    func startBasicDownload(
+        plan: BasicDownloadPlan,
         outputDir: URL,
-        conversionMode: ConversionMode,
-        proResTier: ProResTier,
-        h264Quality: H264Quality,
-        downscale4K: Bool,
-        deleteSourceAfterConversion: Bool,
-        useHardwareAcceleration: Bool,
-        preferMP4: Bool,
-        cookiesFromBrowser: CookieBrowser,
-        sleepInterval: Bool
+        deleteSourceAfterConversion: Bool = false,
+        useHardwareAcceleration: Bool = true,
+        cookiesFromBrowser: CookieBrowser = .none,
+        sleepInterval: Bool = false
     ) {
         beginDownload(
-            formatSelector: YTDLPService.fallbackFormatSelector,
+            formatSelector: plan.formatSelector,
             outputDir: outputDir,
-            conversionMode: conversionMode,
-            proResTier: proResTier,
-            h264Quality: h264Quality,
-            downscale4K: downscale4K,
+            conversionMode: plan.conversionMode,
+            proResTier: plan.proResTier,
+            h264Quality: plan.h264Quality,
+            downscale4K: false,
             deleteSourceAfterConversion: deleteSourceAfterConversion,
             useHardwareAcceleration: useHardwareAcceleration,
-            preferMP4: preferMP4,
+            preferMP4: false,
             cookiesFromBrowser: cookiesFromBrowser,
             sleepInterval: sleepInterval
         )
     }
+
+    /// Entry point for the 403 alert's "Retry with Best-Quality Auto-Select"
+    /// button — bypasses the current video/audio format selection entirely
+    /// in favor of yt-dlp's own adaptive best-video+best-audio selector.
+    /// Takes no parameters: reuses `lastRunConfig`, i.e. whatever
+    /// conversion settings the failed attempt was actually started with
+    /// (Advanced mode's Output-section state, or a Basic-mode plan's) —
+    /// this matters because a fixed reference to Advanced's @AppStorage
+    /// settings would silently ignore a Basic-mode run's ProRes/H.264
+    /// choice on retry, breaking Basic mode's "always end up with a
+    /// playable file" guarantee.
+    func retryWithBestQualitySelector() {
+        guard let config = lastRunConfig else { return }
+        beginDownload(
+            formatSelector: YTDLPService.fallbackFormatSelector,
+            outputDir: config.outputDir,
+            conversionMode: config.conversionMode,
+            proResTier: config.proResTier,
+            h264Quality: config.h264Quality,
+            downscale4K: config.downscale4K,
+            deleteSourceAfterConversion: config.deleteSourceAfterConversion,
+            useHardwareAcceleration: config.useHardwareAcceleration,
+            preferMP4: config.preferMP4,
+            cookiesFromBrowser: config.cookiesFromBrowser,
+            sleepInterval: config.sleepInterval
+        )
+    }
+
+    /// Captures the settings a `beginDownload` call was actually started
+    /// with, so `retryWithBestQualitySelector` (and any future no-context
+    /// retry) can reuse them exactly rather than re-reading whatever the
+    /// UI's current (possibly different, possibly Advanced-mode-only)
+    /// state happens to be.
+    private struct RunConfig {
+        let outputDir: URL
+        let conversionMode: ConversionMode
+        let proResTier: ProResTier
+        let h264Quality: H264Quality
+        let downscale4K: Bool
+        let deleteSourceAfterConversion: Bool
+        let useHardwareAcceleration: Bool
+        let preferMP4: Bool
+        let cookiesFromBrowser: CookieBrowser
+        let sleepInterval: Bool
+    }
+    private var lastRunConfig: RunConfig?
 
     private func beginDownload(
         formatSelector: String,
@@ -322,6 +395,19 @@ final class AppViewModel: ObservableObject {
             missingToolAlert = missing
             return
         }
+
+        lastRunConfig = RunConfig(
+            outputDir: outputDir,
+            conversionMode: conversionMode,
+            proResTier: proResTier,
+            h264Quality: h264Quality,
+            downscale4K: downscale4K,
+            deleteSourceAfterConversion: deleteSourceAfterConversion,
+            useHardwareAcceleration: useHardwareAcceleration,
+            preferMP4: preferMP4,
+            cookiesFromBrowser: cookiesFromBrowser,
+            sleepInterval: sleepInterval
+        )
 
         isRunning = true
         lastError = nil
@@ -613,6 +699,10 @@ final class AppViewModel: ObservableObject {
 
         if convertResult.exitCode == 0 {
             appendLog("\n\(modeName) conversion complete: \(outputURL.path)\n")
+
+            if !isH264, case .success(let tag) = await FFmpegService.probeCodecTag(fileURL: outputURL, runner: runner) {
+                appendLog("Output codec tag: \(tag) (expected apcn for 422, apch for 422 HQ)\n")
+            }
 
             if deleteSourceAfterConversion {
                 do {

@@ -21,6 +21,26 @@ struct ContentView: View {
 
     @State private var showSetupSheet = false
 
+    /// Basic vs Advanced UI mode — see CLAUDE.md's "Basic / Advanced
+    /// mode" section. Defaults to Basic.
+    @AppStorage("appMode") private var appMode: AppMode = .basic
+    /// Basic mode's single "Editing quality (ProRes)" toggle, shown in the
+    /// resolution-picker sheet — persists across launches like every other
+    /// conversion-related setting in this file.
+    @AppStorage("basicUseProRes") private var basicUseProRes = false
+    /// Basic mode's ProRes tier, only shown/relevant once the toggle above
+    /// is on. Defaults to 422 (`ProResTier.basicModeDefault`), deliberately
+    /// *not* 422 HQ like Advanced mode's `proResTier` default below — 422
+    /// is the honest "good balance" recommendation for Basic mode's
+    /// audience.
+    @AppStorage("basicProResTier") private var basicProResTier: ProResTier = ProResTier.basicModeDefault
+    /// Basic mode's "delete source file after conversion" toggle — default
+    /// on, since ProRes files are large and keeping both the download and
+    /// the converted file wastes significant disk space. Still a real,
+    /// visible, persisted toggle, not forced behavior.
+    @AppStorage("basicDeleteSourceAfterConversion") private var basicDeleteSourceAfterConversion = true
+    @State private var showBasicResolutionSheet = false
+
     @AppStorage("conversionMode") private var conversionMode: ConversionMode = .none
     @AppStorage("proResTier") private var proResTier: ProResTier = .hq
     @AppStorage("h264Quality") private var h264Quality: H264Quality = .medium
@@ -45,20 +65,123 @@ struct ContentView: View {
         return base.sorted(using: sortOrder)
     }
 
+    /// The hosting NSWindow, captured via `WindowAccessor` below — needed
+    /// to actively resize the window's height per mode. SwiftUI's
+    /// `.frame(minHeight:)` only constrains how small/large a *manual*
+    /// resize can go; it does not itself shrink or grow the window's
+    /// current frame when that constraint changes (e.g. switching from
+    /// Advanced to Basic), which is exactly why Basic mode used to inherit
+    /// whatever height Advanced mode (or the saved/default frame) last
+    /// had. `applyWindowHeight` below is what actually moves the frame.
+    @State private var hostWindow: NSWindow?
+
+    /// Basic mode's content (URL field is in the toolbar, not here; just
+    /// the color badge + output folder + status/progress + version
+    /// footer) is much shorter than Advanced's formats table + full
+    /// conversion controls — these are each mode's *default* height, not
+    /// a remembered per-mode size; switching modes always snaps to the
+    /// new mode's default (per spec — manual resizing afterward is still
+    /// allowed, just not persisted across a mode switch).
+    /// Advanced mode's default is a fixed, historically-tuned height (its
+    /// content — formats table + full conversion controls — easily
+    /// exceeds any natural minimum, so hardcoding is fine and matches
+    /// this app's pre-existing default). Basic mode instead uses
+    /// `hostWindow.minSize.height` — the natural minimum height SwiftUI's
+    /// `.windowResizability(.automatic)` already computed from Basic
+    /// mode's actual rendered content — rather than a second hardcoded
+    /// guess. This matters because native controls (`Form`, etc.) have
+    /// their own intrinsic minimum row heights that a `.frame(minHeight:)`
+    /// hint can't force them below; a hardcoded target smaller than that
+    /// true minimum gets silently clamped back up by `NSWindow.setFrame`
+    /// (verified: requesting 320 when the real minimum was 352 just
+    /// produced 352, not 320) — asking the window for its own already-
+    /// computed minimum sidesteps needing to guess a number that matches
+    /// the real content at all.
+    private func defaultWindowHeight(for mode: AppMode, window: NSWindow) -> CGFloat {
+        mode == .advanced ? 780 : window.minSize.height
+    }
+
+    /// Resizes the hosting window to the given mode's default height,
+    /// keeping the window's width, x-origin, and *top* edge fixed (so it
+    /// visually shrinks/grows from the bottom, anchored where the user's
+    /// eye already is — the title bar/toolbar don't jump). Deferred one
+    /// runloop tick so SwiftUI's own window-constraint update (driven by
+    /// the `.frame(minHeight:)` that changed along with `mode`) has
+    /// already landed on `window.minSize` before Basic mode reads it.
+    private func applyWindowHeight(for mode: AppMode, animate: Bool) {
+        guard let hostWindow else { return }
+        DispatchQueue.main.async {
+            let targetHeight = defaultWindowHeight(for: mode, window: hostWindow)
+            var frame = hostWindow.frame
+            guard abs(frame.height - targetHeight) > 0.5 else { return }
+            let top = frame.origin.y + frame.height
+            frame.size.height = targetHeight
+            frame.origin.y = top - targetHeight
+            hostWindow.setFrame(frame, display: true, animate: animate)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             updateBannersSection
-            formatsSection
-            colorIndicatorBadge
-            downloadOptionsSection
-            outputSection
+            videoInfoSection
+            if appMode == .advanced {
+                formatsSection
+                colorIndicatorBadge
+                downloadOptionsSection
+                outputFolderSection
+                conversionSection
+            } else {
+                colorIndicatorBadge
+                outputFolderSection
+            }
             statusSection
             versionFooter
         }
         .padding(12)
-        .frame(minWidth: 820, minHeight: 620)
+        .frame(minWidth: 820, minHeight: appMode == .advanced ? 620 : 300, alignment: .top)
         .background(.regularMaterial)
+        .background(
+            WindowAccessor { window in
+                guard hostWindow !== window else { return }
+                hostWindow = window
+                applyWindowHeight(for: appMode, animate: false)
+            }
+        )
+        .onChange(of: appMode) { _, newMode in
+            applyWindowHeight(for: newMode, animate: true)
+        }
         .toolbar { toolbarContent }
+        .sheet(isPresented: $showBasicResolutionSheet) {
+            BasicResolutionSheet(
+                title: viewModel.videoMetadata?.title,
+                choices: BasicModeService.availableResolutionChoices(formats: viewModel.formats),
+                useProRes: $basicUseProRes,
+                proResTier: $basicProResTier,
+                deleteSourceAfterConversion: $basicDeleteSourceAfterConversion,
+                onGo: { choice in
+                    showBasicResolutionSheet = false
+                    guard let plan = BasicModeService.plan(
+                        for: choice, formats: viewModel.formats, useProRes: basicUseProRes, proResTier: basicProResTier
+                    ) else {
+                        return
+                    }
+                    viewModel.startBasicDownload(
+                        plan: plan,
+                        outputDir: outputDirectoryURL,
+                        // Only meaningful when ProRes was actually chosen —
+                        // never let a persisted "on" value leak into the
+                        // (non-ProRes) H.264 direct-download/auto-convert
+                        // paths, which the toggle isn't shown for.
+                        deleteSourceAfterConversion: basicUseProRes ? basicDeleteSourceAfterConversion : false,
+                        useHardwareAcceleration: useHardwareAcceleration,
+                        cookiesFromBrowser: cookiesFromBrowser,
+                        sleepInterval: sleepInterval
+                    )
+                },
+                onCancel: { showBasicResolutionSheet = false }
+            )
+        }
         .task {
             NotificationService.requestAuthorizationIfNeeded()
             viewModel.checkYTDLPVersion()
@@ -109,18 +232,7 @@ struct ContentView: View {
                     case .openSettings:
                         openSettings()
                     case .retryBestQuality:
-                        viewModel.retryWithBestQualitySelector(
-                            outputDir: outputDirectoryURL,
-                            conversionMode: conversionMode,
-                            proResTier: proResTier,
-                            h264Quality: h264Quality,
-                            downscale4K: downscale4K,
-                            deleteSourceAfterConversion: deleteSourceAfterConversion,
-                            useHardwareAcceleration: useHardwareAcceleration,
-                            preferMP4: preferMP4,
-                            cookiesFromBrowser: cookiesFromBrowser,
-                            sleepInterval: sleepInterval
-                        )
+                        viewModel.retryWithBestQualitySelector()
                     }
                     viewModel.actionableAlert = nil
                 }
@@ -150,32 +262,46 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Picker("Mode", selection: $appMode) {
+                ForEach(AppMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 160)
+            .disabled(viewModel.isBusy)
+            .help("Basic: paste a URL and pick a resolution. Advanced: full format table and conversion controls.")
+        }
+
         ToolbarItem(placement: .principal) {
             TextField("YouTube URL", text: $viewModel.urlString)
                 .textFieldStyle(.roundedBorder)
                 .frame(minWidth: 260, idealWidth: 420)
                 .disabled(viewModel.isBusy)
-                .onSubmit { viewModel.fetchFormats(cookiesFromBrowser: cookiesFromBrowser) }
+                .onSubmit { handleURLFieldSubmit() }
         }
 
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                viewModel.fetchFormats(cookiesFromBrowser: cookiesFromBrowser)
-            } label: {
-                Label("Fetch Formats", systemImage: "list.bullet.rectangle.portrait")
+        if appMode == .advanced {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    viewModel.fetchFormats(cookiesFromBrowser: cookiesFromBrowser)
+                } label: {
+                    Label("Fetch Formats", systemImage: "list.bullet.rectangle.portrait")
+                }
+                .disabled(viewModel.isBusy || viewModel.urlString.trimmingCharacters(in: .whitespaces).isEmpty)
+                .help("Fetch available formats for this URL")
             }
-            .disabled(viewModel.isBusy || viewModel.urlString.trimmingCharacters(in: .whitespaces).isEmpty)
-            .help("Fetch available formats for this URL")
-        }
 
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                viewModel.selectBestQuality()
-            } label: {
-                Label("Best Quality", systemImage: "sparkles")
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    viewModel.selectBestQuality()
+                } label: {
+                    Label("Best Quality", systemImage: "sparkles")
+                }
+                .disabled(viewModel.formats.isEmpty || viewModel.isBusy)
+                .help("Select the highest-resolution video and best audio automatically")
             }
-            .disabled(viewModel.formats.isEmpty || viewModel.isBusy)
-            .help("Select the highest-resolution video and best audio automatically")
         }
 
         ToolbarItem(placement: .primaryAction) {
@@ -190,25 +316,36 @@ struct ContentView: View {
         }
 
         ToolbarItem(placement: .primaryAction) {
-            Button {
-                viewModel.startDownload(
-                    outputDir: outputDirectoryURL,
-                    conversionMode: conversionMode,
-                    proResTier: proResTier,
-                    h264Quality: h264Quality,
-                    downscale4K: downscale4K,
-                    deleteSourceAfterConversion: deleteSourceAfterConversion,
-                    useHardwareAcceleration: useHardwareAcceleration,
-                    preferMP4: preferMP4,
-                    cookiesFromBrowser: cookiesFromBrowser,
-                    sleepInterval: sleepInterval
-                )
-            } label: {
-                Label("Download", systemImage: "arrow.down.circle.fill")
+            if appMode == .advanced {
+                Button {
+                    viewModel.startDownload(
+                        outputDir: outputDirectoryURL,
+                        conversionMode: conversionMode,
+                        proResTier: proResTier,
+                        h264Quality: h264Quality,
+                        downscale4K: downscale4K,
+                        deleteSourceAfterConversion: deleteSourceAfterConversion,
+                        useHardwareAcceleration: useHardwareAcceleration,
+                        preferMP4: preferMP4,
+                        cookiesFromBrowser: cookiesFromBrowser,
+                        sleepInterval: sleepInterval
+                    )
+                } label: {
+                    Label("Download", systemImage: "arrow.down.circle.fill")
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(viewModel.isBusy || viewModel.selectedVideoID == nil)
+                .help("Download the selected formats")
+            } else {
+                Button {
+                    startBasicFlow()
+                } label: {
+                    Label("Download", systemImage: "arrow.down.circle.fill")
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(viewModel.isBusy || viewModel.urlString.trimmingCharacters(in: .whitespaces).isEmpty)
+                .help("Fetch formats and choose a resolution")
             }
-            .keyboardShortcut(.defaultAction)
-            .disabled(viewModel.isBusy || viewModel.selectedVideoID == nil)
-            .help("Download the selected formats")
         }
     }
 
@@ -272,6 +409,76 @@ struct ContentView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    // MARK: - Video info (title / thumbnail / duration / channel)
+
+    /// Confirms the right video was found before (and during) download —
+    /// shown in both modes. Basic mode renders it prominently (it's the
+    /// main thing filling that mode's otherwise-thin window before a
+    /// download starts); Advanced mode renders a smaller version above the
+    /// Formats table. Stays visible through download/conversion too, since
+    /// `AppViewModel.videoMetadata` is only cleared at the start of the
+    /// next fetch, not by `beginDownload`.
+    @ViewBuilder
+    private var videoInfoSection: some View {
+        if viewModel.isFetchingFormats {
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("Fetching video info…")
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else if let metadata = viewModel.videoMetadata {
+            videoInfoCard(metadata: metadata, prominent: appMode == .basic)
+        }
+    }
+
+    private func videoInfoCard(metadata: VideoMetadata, prominent: Bool) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            videoThumbnail(url: metadata.thumbnailURL)
+                .frame(width: prominent ? 176 : 96, height: prominent ? 99 : 54)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(metadata.title)
+                    .font(prominent ? .title3.weight(.semibold) : .headline)
+                    .lineLimit(prominent ? 3 : 2)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    if let channel = metadata.channel {
+                        Label(channel, systemImage: "person.circle")
+                    }
+                    Label(metadata.displayDuration, systemImage: "clock")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(prominent ? 14 : 8)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func videoThumbnail(url: URL?) -> some View {
+        ZStack {
+            Rectangle().fill(.quaternary)
+            if let url {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().aspectRatio(contentMode: .fill)
+                    case .empty:
+                        ProgressView().controlSize(.small)
+                    case .failure:
+                        Image(systemName: "photo").foregroundStyle(.secondary)
+                    @unknown default:
+                        EmptyView()
+                    }
+                }
+            }
+        }
+        .clipped()
     }
 
     // MARK: - Formats
@@ -449,7 +656,10 @@ struct ContentView: View {
 
     // MARK: - Output section
 
-    private var outputSection: some View {
+    /// Just the output-folder picker — shared by both modes (see CLAUDE.md's
+    /// "Shared behavior": output folder setting is identical in both).
+    /// Split out from the conversion controls below, which are Advanced-only.
+    private var outputFolderSection: some View {
         Form {
             Section("Output") {
                 LabeledContent("Folder") {
@@ -463,7 +673,14 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+        .formStyle(.grouped)
+        .fixedSize(horizontal: false, vertical: true)
+        .disabled(viewModel.isBusy)
+    }
 
+    private var conversionSection: some View {
+        Form {
             Section("Conversion") {
                 Picker("Convert to", selection: $conversionMode) {
                     ForEach(ConversionMode.allCases) { mode in
@@ -601,6 +818,175 @@ struct ContentView: View {
             outputDirectoryPath = url.path
         }
     }
+
+    private func handleURLFieldSubmit() {
+        if appMode == .advanced {
+            viewModel.fetchFormats(cookiesFromBrowser: cookiesFromBrowser)
+        } else {
+            startBasicFlow()
+        }
+    }
+
+    /// Basic mode's entire "Download" action: fetches formats silently (no
+    /// separate "Fetch Formats" step the user has to trigger — see
+    /// CLAUDE.md's "Basic mode flow"), then opens the resolution-picker
+    /// sheet on success. A fetch failure already surfaces its own alert/
+    /// lastError via `fetchFormatsAwaiting`, so there's nothing else to do
+    /// here on failure.
+    private func startBasicFlow() {
+        Task {
+            let success = await viewModel.fetchFormatsAwaiting(cookiesFromBrowser: cookiesFromBrowser)
+            if success {
+                showBasicResolutionSheet = true
+            }
+        }
+    }
+}
+
+// MARK: - Basic mode resolution sheet
+
+/// The entire Basic-mode decision surface: pick a resolution, optionally
+/// flip on "Editing quality (ProRes)", press Go. Everything else (HDR
+/// tone-mapping, codec/container choice, progress, notifications) is
+/// automatic — see CLAUDE.md's "Basic mode flow".
+private struct BasicResolutionSheet: View {
+    let title: String?
+    let choices: [BasicResolutionChoice]
+    @Binding var useProRes: Bool
+    @Binding var proResTier: ProResTier
+    @Binding var deleteSourceAfterConversion: Bool
+    let onGo: (BasicResolutionChoice) -> Void
+    let onCancel: () -> Void
+
+    @State private var selected: BasicResolutionChoice?
+
+    /// Pre-selects "Best available" (always the last entry in `choices`
+    /// when non-empty — see `BasicModeService.availableResolutionChoices`)
+    /// so the sheet never opens in a dead-end state with Go disabled and
+    /// nothing selected. Sensible defaults are the point of Basic mode.
+    init(
+        title: String?,
+        choices: [BasicResolutionChoice],
+        useProRes: Binding<Bool>,
+        proResTier: Binding<ProResTier>,
+        deleteSourceAfterConversion: Binding<Bool>,
+        onGo: @escaping (BasicResolutionChoice) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.title = title
+        self.choices = choices
+        self._useProRes = useProRes
+        self._proResTier = proResTier
+        self._deleteSourceAfterConversion = deleteSourceAfterConversion
+        self.onGo = onGo
+        self.onCancel = onCancel
+        self._selected = State(initialValue: choices.last)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Choose a Resolution")
+                    .font(.headline)
+                // Shown so the user is confirming a specific video, not an
+                // anonymous URL, before picking a resolution.
+                if let title {
+                    Text(title)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            if choices.isEmpty {
+                ContentUnavailableView(
+                    "No Formats Found",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text("No downloadable video formats were found for this URL.")
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(choices) { choice in
+                        Button {
+                            selected = choice
+                        } label: {
+                            HStack {
+                                Image(systemName: selected == choice ? "largecircle.fill.circle" : "circle")
+                                    .foregroundStyle(selected == choice ? Color.accentColor : Color.secondary)
+                                Text(choice.label)
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                            .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Editing quality (ProRes)", isOn: $useProRes)
+                    Text("Much larger files, but scrubs smoothly in editing software.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if useProRes {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(ProResTier.allCases) { tier in
+                                Button {
+                                    proResTier = tier
+                                } label: {
+                                    HStack(alignment: .top) {
+                                        Image(systemName: proResTier == tier ? "largecircle.fill.circle" : "circle")
+                                            .foregroundStyle(proResTier == tier ? Color.accentColor : Color.secondary)
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            HStack(spacing: 6) {
+                                                Text(tier.label)
+                                                if tier == .basicModeDefault {
+                                                    Text("Recommended")
+                                                        .font(.caption2.weight(.semibold))
+                                                        .foregroundStyle(Color.accentColor)
+                                                        .padding(.horizontal, 5)
+                                                        .padding(.vertical, 1)
+                                                        .background(Color.accentColor.opacity(0.15), in: Capsule())
+                                                }
+                                            }
+                                            Text(tier.basicModeTagline)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                    }
+                                    .contentShape(Rectangle())
+                                    .padding(.vertical, 3)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.leading, 4)
+
+                        Toggle("Delete source file after conversion", isOn: $deleteSourceAfterConversion)
+                        Text("The downloaded file is kept until the ProRes conversion finishes successfully.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { onCancel() }
+                Button("Go") {
+                    if let selected { onGo(selected) }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(selected == nil)
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
+    }
 }
 
 // MARK: - Settings
@@ -711,6 +1097,28 @@ struct SettingsView: View {
         updateResult = trimmed.isEmpty ? "yt-dlp is already up to date." : trimmed
         isUpdatingYTDLP = false
         await refreshInstalledVersion()
+    }
+}
+
+// MARK: - Window accessor
+
+/// Bridges to the hosting NSWindow so `ContentView` can actively resize it
+/// per `AppMode` — SwiftUI has no pure-SwiftUI API to command a window
+/// resize (`.frame(minHeight:)` only constrains manual resizing, it
+/// doesn't move the current frame). An invisible, zero-drawing NSView
+/// whose only job is reporting `.window` back up; safe to layer into
+/// `.background()` since it draws nothing.
+private struct WindowAccessor: NSViewRepresentable {
+    let onResolve: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { onResolve(view.window) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { onResolve(nsView.window) }
     }
 }
 

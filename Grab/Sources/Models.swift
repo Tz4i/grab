@@ -56,6 +56,35 @@ struct VideoFormat: Identifiable, Hashable {
     }
 }
 
+/// Metadata for the video that was fetched, shown in both Basic and
+/// Advanced modes so the user can confirm the right video was found before
+/// downloading — see YTDLPService.fetchFormats, which now fetches this
+/// alongside the format list in a single `-J` call rather than a second
+/// request.
+struct VideoMetadata: Equatable {
+    let title: String
+    let thumbnailURLString: String?
+    let durationSeconds: Double?
+    let channel: String?
+
+    var thumbnailURL: URL? {
+        thumbnailURLString.flatMap(URL.init(string:))
+    }
+
+    /// "H:MM:SS" once over an hour, otherwise "M:SS". "-" when yt-dlp
+    /// didn't report a duration at all (e.g. live streams).
+    var displayDuration: String {
+        guard let durationSeconds, durationSeconds > 0 else { return "-" }
+        let total = Int(durationSeconds.rounded())
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let seconds = total % 60
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, seconds)
+            : String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
 enum ProResTier: Int, CaseIterable, Identifiable {
     case proxy = 0
     case lt = 1
@@ -74,6 +103,24 @@ enum ProResTier: Int, CaseIterable, Identifiable {
         case .p4444: return "4444"
         }
     }
+
+    /// Plain, honest, no-codec-jargon tradeoff text for Basic mode's tier
+    /// picker (Advanced mode just shows `label` with no description — its
+    /// users are presumed to know what a ProRes tier is).
+    var basicModeTagline: String {
+        switch self {
+        case .proxy: return "Smallest files, lowest quality. For rough cuts."
+        case .lt: return "Smaller files. Fine for simple edits."
+        case .standard: return "Good balance for color correction and sharpening."
+        case .hq: return "Larger files. More headroom for heavy grading."
+        case .p4444: return "Largest files. Only needed for alpha/transparency."
+        }
+    }
+
+    /// Basic mode's recommended default tier — 422, not 422 HQ (which
+    /// Advanced mode defaults to) — see CLAUDE.md's "Basic / Advanced mode"
+    /// section for why the two modes intentionally differ here.
+    static let basicModeDefault: ProResTier = .standard
 }
 
 /// What happens to the file after download. `.none` keeps the downloaded
@@ -153,6 +200,60 @@ enum H264Quality: Int, CaseIterable, Identifiable {
         case .low: return "2500k"
         }
     }
+}
+
+/// Basic vs Advanced UI mode (see CLAUDE.md's "Basic / Advanced mode"
+/// section). Advanced is the pre-existing full interface, unchanged;
+/// Basic is a simplified "paste URL, pick a resolution, done" flow built
+/// on top of the same download/convert engine. Defaults to Basic.
+enum AppMode: String, CaseIterable, Identifiable {
+    case basic, advanced
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .basic: return "Basic"
+        case .advanced: return "Advanced"
+        }
+    }
+}
+
+/// The resolution choices offered in Basic mode's picker sheet. `.best`
+/// is a sentinel ("Best available"), not a real pixel height — always
+/// offered, since some video format always exists once formats have been
+/// fetched. `.p720`/`.p1080`/`.p2160` are only offered when a matching
+/// format actually exists for the video — see
+/// BasicModeService.availableResolutionChoices.
+enum BasicResolutionChoice: Int, CaseIterable, Identifiable, Equatable {
+    case p720 = 720
+    case p1080 = 1080
+    case p2160 = 2160
+    case best = -1
+
+    var id: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .p720: return "720p"
+        case .p1080: return "1080p"
+        case .p2160: return "4K"
+        case .best: return "Best available"
+        }
+    }
+}
+
+/// The concrete download+convert plan Basic mode hands to
+/// `AppViewModel.startBasicDownload` — built by `BasicModeService.plan`
+/// from a resolution choice + the "Editing quality (ProRes)" toggle. Runs
+/// through the exact same `beginDownload`/`runDownloadAndConvert` engine
+/// Advanced mode uses; this is purely a UI-layer simplification, not a
+/// second implementation.
+struct BasicDownloadPlan {
+    let formatSelector: String
+    let conversionMode: ConversionMode
+    let h264Quality: H264Quality
+    let proResTier: ProResTier
 }
 
 enum CookieBrowser: String, CaseIterable, Identifiable {
@@ -245,7 +346,7 @@ struct ActionableAlert: Identifiable {
             return ActionableAlert(
                 title: "YouTube Requires Verification",
                 message: "YouTube is asking to confirm this isn't a bot. This is often fixed by updating yt-dlp "
-                    + "(Settings → Update yt-dlp), and/or by enabling \"Use cookies from browser\" in Settings.",
+                    + "(Settings → Update yt-dlp), and/or by enabling \"Use cookies from browser\" in Settings. If you have a VPN on you should turn it off.",
                 actionLabel: "Open Settings",
                 action: .openSettings
             )
