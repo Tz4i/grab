@@ -1628,7 +1628,12 @@ update checking, H.264 conversion mode, window chrome translucency — see
 their respective sections above) → `v1.1.1` (patch: log-pane UI-overflow
 fix + disk-full retry-loop fix — see "Log buffer capping/throttling" and
 "Retry safety / disk-space handling" above; no new user-facing features,
-hence a patch bump rather than minor). The version-bump-then-release
+hence a patch bump rather than minor) → `v1.2.0` (minor: video metadata
+display in both modes + the resolution sheet, Basic mode's ProRes tier
+picker and delete-source-after-conversion toggle, "Best available"
+pre-selected by default, per-mode window sizing — see "Video metadata
+display" and "Basic / Advanced mode" above; real new user-facing
+features, hence minor rather than patch). The version-bump-then-release
 workflow (`project.yml`'s `MARKETING_VERSION` → `scripts/release.sh` →
 `git tag`/`gh release create`) was validated a third time end-to-end for
 v1.1.1 with no surprises, confirming the single-source-of-truth versioning
