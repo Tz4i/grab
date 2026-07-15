@@ -8,6 +8,10 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.6.0
 targets:
   Grab:
     type: application
@@ -16,6 +20,8 @@ targets:
     sources:
       - path: Grab/Sources
       - path: Grab/Resources/Assets.xcassets
+    dependencies:
+      - package: Sparkle
     info:
       path: Grab/Resources/Info.plist
       properties:
@@ -26,6 +32,17 @@ targets:
         LSMinimumSystemVersion: "14.0"
         NSHighResolutionCapable: true
         LSApplicationCategoryType: public.app-category.utilities
+        # Sparkle auto-update config. SUFeedURL points at the appcast this
+        # repo hosts at its own root (see appcast.xml, updated by
+        # scripts/release.sh on every release). SUPublicEDKey is the EdDSA
+        # public key matching the private key generated via Sparkle's
+        # generate_keys tool and stored in this machine's login Keychain
+        # (account "ed25519") -- see CLAUDE.md's "Auto-updates (Sparkle)"
+        # section for the full story, including where the private key
+        # lives and why it's never a file that could be committed.
+        SUFeedURL: "https://raw.githubusercontent.com/Tz4i/grab/main/appcast.xml"
+        SUPublicEDKey: "r9ZTX9SsJmwHkuDDusEVcz9zLD7hfVdKHehSdG1JBBc="
+        SUEnableAutomaticChecks: true
     entitlements:
       path: Grab/Resources/Grab.entitlements
       properties:
@@ -34,7 +51,15 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.local.grab
         MARKETING_VERSION: "1.3.0"
-        CURRENT_PROJECT_VERSION: "1"
+        # Kept equal to MARKETING_VERSION from this release onward (was
+        # hardcoded "1" forever before Sparkle existed, since nothing ever
+        # compared it) -- Sparkle's default version comparator uses this
+        # (CFBundleVersion, via the appcast's <sparkle:version>) to decide
+        # whether an appcast entry is actually newer than what's running.
+        # A CFBundleVersion that never changes would mean Sparkle can never
+        # detect an update. Bump this alongside MARKETING_VERSION at every
+        # release from now on -- see "Versioning" in CLAUDE.md.
+        CURRENT_PROJECT_VERSION: "1.3.0"
         GENERATE_INFOPLIST_FILE: false
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_IDENTITY: "-"

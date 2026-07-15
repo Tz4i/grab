@@ -26,5 +26,11 @@
 	<string>14.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/Tz4i/grab/main/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>r9ZTX9SsJmwHkuDDusEVcz9zLD7hfVdKHehSdG1JBBc=</string>
 </dict>
 </plist>

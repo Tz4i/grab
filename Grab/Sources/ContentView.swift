@@ -370,6 +370,12 @@ struct ContentView: View {
 
     // MARK: - Update banners
 
+    /// yt-dlp's own update nag only now — the app-update banner that used
+    /// to live here (GitHub-API-polling `AppUpdateService`, just linking to
+    /// the release page) is gone; Sparkle owns app-update checking/UI
+    /// entirely now, via the "Check for Updates…" app-menu item and its
+    /// own automatic background check — see CLAUDE.md's "Auto-updates
+    /// (Sparkle)" section.
     @ViewBuilder
     private var updateBannersSection: some View {
         if let info = viewModel.ytdlpUpdateInfo {
@@ -381,16 +387,6 @@ struct ContentView: View {
                 isBusy: viewModel.isUpdatingYTDLPFromBanner,
                 action: { Task { await viewModel.updateYTDLPFromBanner() } },
                 dismiss: { viewModel.ytdlpUpdateInfo = nil }
-            )
-        }
-        if let info = viewModel.appUpdateInfo {
-            updateBanner(
-                icon: "sparkles",
-                text: "Grab \(info.version) is available.",
-                actionLabel: "View Release",
-                isBusy: false,
-                action: { NSWorkspace.shared.open(info.url) },
-                dismiss: { viewModel.appUpdateInfo = nil }
             )
         }
     }

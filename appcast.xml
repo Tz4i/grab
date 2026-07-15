@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sparkle appcast for Grab. Hosted at
+  https://raw.githubusercontent.com/Tz4i/grab/main/appcast.xml (see
+  SUFeedURL in project.yml). Updated automatically by scripts/release.sh
+  on every release; see CLAUDE.md's "Auto-updates (Sparkle)" section
+  before editing this by hand. New items are inserted directly after the
+  ITEMS marker comment below (newest first); don't remove that marker.
+-->
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+    <channel>
+        <title>Grab</title>
+        <link>https://raw.githubusercontent.com/Tz4i/grab/main/appcast.xml</link>
+        <description>Update feed for Grab, a native macOS YouTube downloader.</description>
+        <language>en</language>
+        <!-- ITEMS MARKER: new release items are inserted right after this comment -->
+
+        <item>
+            <title>Version 1.3.0</title>
+            <pubDate>Wed, 15 Jul 2026 03:19:07 +0000</pubDate>
+            <sparkle:version>1.3.0</sparkle:version>
+            <sparkle:shortVersionString>1.3.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/Tz4i/grab/releases/download/v1.3.0/Grab-1.3.0.dmg" sparkle:edSignature="Cs3rFJ0HmzbIXk298it89EIeDX8Z0ThL0AnpGqaohTluqmyh5xXv9x28cO/t6KxppZ13UNIkCQDyd2Kq/sn9Aw==" length="1059990" type="application/octet-stream" />
+        </item>
+    </channel>
+</rss>

@@ -6,3 +6,4 @@ build/
 *.xcuserstate
 xcuserdata/
 .claude/
+.sparkle-tools/

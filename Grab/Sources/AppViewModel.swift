@@ -37,14 +37,15 @@ final class AppViewModel: ObservableObject {
     /// "Reveal in Finder" button; nil until a job actually completes.
     @Published var lastOutputURL: URL?
 
-    /// Both update banners: nil means "don't show" — either no update is
-    /// available, the check hasn't completed yet, the check failed (handled
-    /// silently, see AppUpdateService/YTDLPService.checkForUpdate), or the
-    /// user dismissed the banner this session. Not persisted — a fresh
-    /// launch re-checks and re-shows if still applicable, which is the
-    /// point of an update nag.
+    /// nil means "don't show" — either no update is available, the check
+    /// hasn't completed yet, the check failed (handled silently, see
+    /// YTDLPService.checkForUpdate), or the user dismissed the banner this
+    /// session. Not persisted — a fresh launch re-checks and re-shows if
+    /// still applicable, which is the point of an update nag. App-update
+    /// checking (as opposed to yt-dlp) is no longer handled here at all —
+    /// Sparkle owns that entirely now, see CLAUDE.md's "Auto-updates
+    /// (Sparkle)" section; this file has nothing to do with it.
     @Published var ytdlpUpdateInfo: YTDLPUpdateInfo?
-    @Published var appUpdateInfo: AppUpdateInfo?
     @Published var isUpdatingYTDLPFromBanner = false
 
     /// Set when a pre-flight disk-space estimate comes up short, right
@@ -166,16 +167,15 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Fires both update checks independently and never awaits either —
-    /// callers (ContentView's launch `.task`) must not block on this.
-    /// Each check is separately silent-on-failure internally; nothing here
-    /// needs its own error handling.
+    /// Never awaited — callers (ContentView's launch `.task`) must not
+    /// block on this. Silent-on-failure internally; nothing here needs its
+    /// own error handling. This is yt-dlp's own version check only now —
+    /// app-update checking used to fire alongside it here too, but that's
+    /// entirely Sparkle's responsibility now (started independently from
+    /// `GrabApp`, not triggered from this view model at all).
     func checkForUpdates() {
         Task {
             ytdlpUpdateInfo = await YTDLPService.checkForUpdate(runner: ProcessRunner())
-        }
-        Task {
-            appUpdateInfo = await AppUpdateService.checkForUpdate()
         }
     }
 
