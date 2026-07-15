@@ -86,11 +86,30 @@ struct ContentView: View {
     /// content — formats table + full conversion controls — easily
     /// exceeds any natural minimum, so hardcoding is fine). Bumped from
     /// the original 780 to 1160 when the visual-polish pass wrapped each
-    /// section in a padded/headered `SectionCard` — re-measured empirically
-    /// (temporarily forcing a tall window and screenshotting) so the
-    /// Conversion section and the log disclosure/version footer stay on
-    /// screen instead of being clipped by a now-too-short fixed height.
-    /// Basic mode instead uses
+    /// section in a padded/headered `SectionCard`, then to 1420 in a later
+    /// session when 1160 turned out to still clip the bottom of the
+    /// Conversion section, the Reveal-in-Finder button, status text, and
+    /// the log disclosure — measured precisely by attaching a
+    /// `GeometryReader` to the last element (`versionFooter`) and reading
+    /// its layout position directly (unaffected by window/screen
+    /// clipping, unlike a screenshot), which put the true minimum right
+    /// around 1400; 1420 adds a small buffer. That same investigation
+    /// found the *actual root cause* wasn't really "1160 is too small" —
+    /// it was that this root `.frame(...)` had `minHeight` but no
+    /// `maxHeight`, so whenever the window was taller than the content's
+    /// own natural size, AppKit centered the undersized content in the
+    /// window instead of top-aligning it (`alignment: .top` only affects
+    /// positioning *within* the frame's own resulting size, and without
+    /// `maxHeight: .infinity` that resulting size just equals the
+    /// content's natural size, leaving nothing for `.top` to act on) —
+    /// confirmed by temporarily pinning the Formats table to a fixed
+    /// small height and watching a dead gap appear *above* the toolbar-
+    /// adjacent content instead of the bottom content becoming visible.
+    /// Adding `maxHeight: .infinity` alongside the existing
+    /// `alignment: .top` fixed that: content now always top-aligns and
+    /// fills whatever height the window actually is, so a too-tall
+    /// default just leaves harmless blank space at the *bottom* instead
+    /// of pushing content off both ends. Basic mode instead uses
     /// `hostWindow.minSize.height` — the natural minimum height SwiftUI's
     /// `.windowResizability(.automatic)` already computed from Basic
     /// mode's actual rendered content — rather than a second hardcoded
@@ -102,8 +121,49 @@ struct ContentView: View {
     /// produced 352, not 320) — asking the window for its own already-
     /// computed minimum sidesteps needing to guess a number that matches
     /// the real content at all.
+    ///
+    /// **Follow-up**: `window.minSize` turns out to only be reliable at
+    /// the moment it's *first* read for a given mode — it does not keep
+    /// itself live-updated as content conditionally appears later in the
+    /// same mode (confirmed by reading `hostWindow.minSize` before and
+    /// after forcing `viewModel.isBusy`/`lastOutputURL`/`log` into a
+    /// populated state via the mock-injection pattern: identical value,
+    /// unchanged, even though the rendered content had clearly grown).
+    /// That's fine for the *idle* case this was designed for (nothing in
+    /// idle Basic-mode content changes after first launch), but it means
+    /// Basic mode's own status/progress bar, Reveal-in-Finder button, and
+    /// log disclosure — all of which only appear once a job actually
+    /// runs — would stay clipped forever at whatever `minSize` happened
+    /// to be when the window first appeared. Fixed by branching: idle
+    /// (nothing to show below the color badge/output folder besides a
+    /// collapsed log header) keeps using `window.minSize.height`, exactly
+    /// as before; once there's something else to show
+    /// (`basicNeedsExpandedHeight` below), a separate hardcoded height is
+    /// used instead, sidestepping `minSize`'s staleness entirely. Sized
+    /// via the same `GeometryReader`-on-`versionFooter` precise
+    /// measurement technique as Advanced mode's fix above: idle bottomY
+    /// ~384, busy (progress bar) ~447, completed-with-log-expanded (log
+    /// box at its 160 *minimum*) ~528 — worst case is log expanded on a
+    /// long real job, where `LogView`'s own `.frame(maxHeight: 320)` cap
+    /// means up to ~160 more than the measured 528, i.e. ~688 content +
+    /// 28 padding + 52 toolbar ≈ 768; 780 adds a small buffer. A single
+    /// shared "expanded" height (rather than a separate one per state)
+    /// was chosen deliberately — busy/error/completed/log-expanded can
+    /// all transition into each other within one job, and resizing the
+    /// window at every one of those micro-transitions would be far more
+    /// distracting than settling once at a height that already fits all
+    /// of them.
+    private var basicNeedsExpandedHeight: Bool {
+        viewModel.isBusy || viewModel.lastOutputURL != nil || viewModel.lastError != nil || logExpanded
+    }
+
     private func defaultWindowHeight(for mode: AppMode, window: NSWindow) -> CGFloat {
-        mode == .advanced ? 1160 : window.minSize.height
+        switch mode {
+        case .advanced:
+            return 1420
+        case .basic:
+            return basicNeedsExpandedHeight ? 780 : window.minSize.height
+        }
     }
 
     /// Resizes the hosting window to the given mode's default height,
@@ -144,7 +204,7 @@ struct ContentView: View {
             versionFooter
         }
         .padding(14)
-        .frame(minWidth: 820, minHeight: appMode == .advanced ? 620 : 300, alignment: .top)
+        .frame(minWidth: 860, minHeight: appMode == .advanced ? 620 : 300, maxHeight: .infinity, alignment: .top)
         // Solid, neutral, opaque — NOT a material. A material here (the
         // previous `.background(.regularMaterial)`) sat behind the *entire*
         // content VStack, not just window chrome, so every card/table/form
@@ -170,6 +230,30 @@ struct ContentView: View {
         .onChange(of: appMode) { _, newMode in
             applyWindowHeight(for: newMode, animate: true)
         }
+        // Basic mode's default height is `hostWindow.minSize.height` —
+        // content-fitted, computed fresh each time this is called (see
+        // `defaultWindowHeight` below) — but nothing re-triggers that
+        // computation just because the status/Reveal-in-Finder/log
+        // content appearing mid-job changed what "fits" means. Without
+        // this, Basic mode stays pinned at its idle-sized minimum for the
+        // rest of the session once first resolved, clipping the progress
+        // bar, the Reveal button, and the log disclosure once a job
+        // actually produces them. Re-running the same `applyWindowHeight`
+        // used for the appMode switch on every state change that can add
+        // or remove bottom content keeps it accurate without hardcoding a
+        // second "busy" height guess.
+        .onChange(of: viewModel.isBusy) { _, _ in
+            applyWindowHeight(for: appMode, animate: true)
+        }
+        .onChange(of: viewModel.lastOutputURL) { _, _ in
+            applyWindowHeight(for: appMode, animate: true)
+        }
+        .onChange(of: viewModel.lastError) { _, _ in
+            applyWindowHeight(for: appMode, animate: true)
+        }
+        .onChange(of: logExpanded) { _, _ in
+            applyWindowHeight(for: appMode, animate: true)
+        }
         .toolbar { toolbarContent }
         .sheet(isPresented: $showBasicResolutionSheet) {
             BasicResolutionSheet(
@@ -185,14 +269,25 @@ struct ContentView: View {
                     ) else {
                         return
                     }
+                    // Delete the source only when a conversion actually ran
+                    // (never for the direct-download, no-conversion path —
+                    // there's only one file there, nothing to delete). For
+                    // ProRes, respect the user's own toggle from the sheet.
+                    // For the forced-H.264 path (no H.264 source at the
+                    // chosen resolution, e.g. 4K+), there's no toggle shown
+                    // -- the source is guaranteed unplayable on its own, so
+                    // it's always safe/expected to delete it once the
+                    // conversion succeeds.
+                    let shouldDeleteSource: Bool
+                    switch plan.conversionMode {
+                    case .none: shouldDeleteSource = false
+                    case .proRes: shouldDeleteSource = basicDeleteSourceAfterConversion
+                    case .h264: shouldDeleteSource = true
+                    }
                     viewModel.startBasicDownload(
                         plan: plan,
                         outputDir: outputDirectoryURL,
-                        // Only meaningful when ProRes was actually chosen —
-                        // never let a persisted "on" value leak into the
-                        // (non-ProRes) H.264 direct-download/auto-convert
-                        // paths, which the toggle isn't shown for.
-                        deleteSourceAfterConversion: basicUseProRes ? basicDeleteSourceAfterConversion : false,
+                        deleteSourceAfterConversion: shouldDeleteSource,
                         useHardwareAcceleration: useHardwareAcceleration,
                         cookiesFromBrowser: cookiesFromBrowser,
                         sleepInterval: sleepInterval
@@ -291,6 +386,16 @@ struct ContentView: View {
             .frame(width: 160)
             .disabled(viewModel.isBusy)
             .help("Basic: paste a URL and pick a resolution. Advanced: full format table and conversion controls.")
+        }
+
+        ToolbarItem(placement: .principal) {
+            Button {
+                pasteFromClipboardAndFetch()
+            } label: {
+                Image(systemName: "doc.on.clipboard")
+            }
+            .disabled(viewModel.isBusy)
+            .help("Paste URL from clipboard and fetch formats")
         }
 
         ToolbarItem(placement: .principal) {
@@ -860,6 +965,30 @@ struct ContentView: View {
         } else {
             startBasicFlow()
         }
+    }
+
+    /// Reads the general pasteboard, and if it holds something that looks
+    /// like a URL (parses with an http/https scheme — not just "any
+    /// nonempty string", so pasting plain text doesn't silently kick off
+    /// a doomed fetch), fills the URL field and immediately triggers the
+    /// same fetch `handleURLFieldSubmit()` would — copy a link in the
+    /// browser, one click here, formats show up with no manual paste step
+    /// in between. An invalid/empty clipboard leaves the field untouched
+    /// and surfaces the same `lastError` text the rest of this file
+    /// already uses for fetch/download failures, rather than inventing a
+    /// separate toast/banner mechanism for one edge case.
+    private func pasteFromClipboardAndFetch() {
+        let clipboardText = NSPasteboard.general.string(forType: .string)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard let url = URL(string: clipboardText),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else {
+            viewModel.lastError = "Clipboard doesn't contain a URL."
+            return
+        }
+        viewModel.urlString = clipboardText
+        handleURLFieldSubmit()
     }
 
     /// Basic mode's entire "Download" action: fetches formats silently (no

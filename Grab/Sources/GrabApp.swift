@@ -27,7 +27,7 @@ struct GrabApp: App {
         // ContentView actively resizes the window per mode right after
         // this initial frame anyway, but starting close to the right size
         // avoids a visible grow-then-shrink flash on a fresh install.
-        .defaultSize(width: 900, height: 350)
+        .defaultSize(width: 940, height: 350)
         .commands {
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesView(updater: updaterController.updater)

@@ -1698,6 +1698,229 @@ persisted `appMode`, and the `onChange`-driven resize call is the same
 `applyWindowHeight` function exercised by the initial-launch path, just
 triggered on a different event with `animate: true` instead of `false`.
 
+### Follow-up fix: Advanced mode's default height still clipped content
+
+Later session, filed as a user bug report: with a populated formats table
+and a completed download (Reveal-in-Finder button showing), Advanced
+mode's 1160 default clipped the bottom of the Conversion section, the
+Reveal-in-Finder button, the status text, and the log disclosure — none
+of it reachable without a manual resize.
+
+**Root cause wasn't really "1160 is too small."** The real bug: the root
+content `.frame(...)` (`ContentView.body`) had `minHeight` but no
+`maxHeight`. `alignment: .top` only controls how content is positioned
+*within* the frame's own resulting size — and without `maxHeight:
+.infinity`, that resulting size just equals the content's natural size,
+leaving nothing for `.top` to act on. So whenever the window was taller
+than Advanced content's natural height, AppKit centered the undersized
+content in the window instead of top-aligning it, silently eating any
+extra height as blank space *above* the toolbar-adjacent content rather
+than revealing more content at the bottom. Confirmed by temporarily
+pinning the Formats table to a fixed small height (200) and watching a
+dead gap appear above the video-info card instead of the Conversion
+section/Reveal button/log becoming visible, even at a much taller window.
+
+**Fix**: added `maxHeight: .infinity` alongside the existing `alignment:
+.top` on that root frame. Content now always fills and top-aligns within
+whatever height the window actually is — a too-tall default just leaves
+harmless blank space at the *bottom*, never eats space needed to reveal
+content that should already be visible.
+
+**Also bumped the Advanced default from 1160 to 1420** — even with the
+alignment fix, 1160 itself was genuinely short by roughly 200-250pt for
+realistic populated content (3-row formats table, ProRes conversion
+section, Reveal-in-Finder button, collapsed log disclosure, version
+footer). Measured precisely, not guessed: attached a `GeometryReader` to
+the last element (`versionFooter`) and read its layout position directly
+via `.frame(in:)` in a named coordinate space — this reports true layout
+geometry regardless of window/screen clipping, unlike a screenshot, and
+sidesteps this dev machine's own screen being too short (~1410 visible)
+to screenshot-verify anything taller. That measurement put the true
+minimum right around 1400; 1420 adds a small buffer. `.windowResizability
+(.automatic)` still governs manual resizing in both directions — this
+only changes each mode's *default*, same as the original per-mode-height
+work above.
+
+**Basic mode's delete-source-after-conversion bug, fixed in the same
+session**: Basic mode's H.264 auto-convert path (4K+ sources, where no
+H.264 format exists at the target resolution — see "Basic / Advanced
+mode" above) never deleted the source file after a successful
+conversion, leaving both the un-openable source and the converted H.264
+file behind. Cause: `ContentView`'s resolution-sheet `onGo` closure
+computed `deleteSourceAfterConversion` from `basicUseProRes ?
+basicDeleteSourceAfterConversion : false` — gating deletion on whether
+the user picked the ProRes toggle, not on whether a conversion actually
+ran. The forced-H.264 path sets `conversionMode: .h264` even with
+`basicUseProRes == false`, so that expression always evaluated to
+`false` for it, regardless of the (correct, engine-level) delete-on-
+success logic already shared by both conversion modes in
+`AppViewModel.runDownloadAndConvert`. Fixed by switching on
+`plan.conversionMode` instead: `.none` never deletes (nothing to
+delete — the direct-download path only ever produces one file), `.proRes`
+respects the user's own sheet toggle same as before, `.h264` always
+deletes (there's no toggle shown for this path — the source is
+guaranteed unplayable on its own, so deleting it once conversion
+succeeds is the only sensible outcome, matching the "never end up with a
+file that doesn't open in QuickTime" guiding principle in "Basic /
+Advanced mode" above). No change was needed in `AppViewModel` itself —
+its delete-after-success logic already applied uniformly to both
+conversion modes; only the Basic-mode call site was wrong.
+
+**Verified**: real Xcode build after every change (`BUILD SUCCEEDED`
+throughout). Visually verified via screenshot (same mock-injection-in-
+`.task`-then-revert pattern used throughout this file, reverted before
+finishing, confirmed by a final clean build with no mock code left):
+Advanced mode at the new 1420 default, populated with synthetic
+multi-format data plus a mocked completed-download state (Reveal button
+showing), shows the full Conversion section, the Reveal-in-Finder
+button, the "Show details" log disclosure, and the version footer all
+simultaneously visible with no clipping — window landed at 1410 on this
+dev machine (OS-clamped to the physical screen's visible height, not our
+default), confirming the fix holds even under that clamp. The delete-
+source fix was verified by reading through `AppViewModel.
+runDownloadAndConvert`'s existing delete-on-success block (unconditional
+on `isH264`, gated only on `convertResult.exitCode == 0`) to confirm no
+engine-level change was needed, and by tracing `BasicModeService.plan`'s
+three `conversionMode` cases against the new switch — not verified via a
+real end-to-end 4K download-and-convert-and-delete run (would need a
+real 4K-only source video and real disk I/O to observe the delete
+happening), consistent with this file's standing practice of saying so
+explicitly rather than implying a click-path was exercised when it wasn't.
+
+### Follow-up fix: Basic mode clipped mid-job content too
+
+Same bug class as the Advanced-mode fix above, filed as a separate user
+report right after: Basic mode's compact idle height (352,
+`hostWindow.minSize.height`) is correct for the idle state it was
+designed for, but once a job actually starts, `statusSection`'s progress
+bar appears, and once it finishes, the Reveal-in-Finder button and (if
+the user expands it) the log disclosure appear too — none of which
+`applyWindowHeight` ever re-ran for, since its only two call sites were
+the initial `WindowAccessor` resolution and `appMode` switching. The
+window just stayed pinned at its idle size for the rest of the session,
+clipping all of it.
+
+**`window.minSize` doesn't live-update the way you'd hope**, confirmed
+by reading `hostWindow.minSize` before and after forcing
+`viewModel.isBusy`/`lastOutputURL`/`log` into a populated state via the
+mock-injection pattern: identical value both times, despite the
+rendered content clearly having grown. `.windowResizability(.automatic)`
+apparently only computes it reliably around initial layout, not
+continuously — so simply re-calling `applyWindowHeight` on more triggers
+(tried first) doesn't help on its own, because `defaultWindowHeight` for
+Basic mode was still reading a stale `minSize`.
+
+**Fix, two parts:**
+1. Added `.onChange` triggers for `viewModel.isBusy`,
+   `viewModel.lastOutputURL`, `viewModel.lastError`, and `logExpanded` —
+   each calls the same `applyWindowHeight(for: appMode, animate: true)`
+   already used for the `appMode` switch, so the window actually
+   re-evaluates its target height at every point new bottom content can
+   appear or disappear.
+2. `defaultWindowHeight` no longer trusts `window.minSize.height` for
+   Basic mode unconditionally — a new `basicNeedsExpandedHeight`
+   computed property (`isBusy || lastOutputURL != nil || lastError !=
+   nil || logExpanded`) selects between the existing `minSize`-based
+   idle height and a separate hardcoded 780 once there's anything to
+   show below the color badge/output folder. One shared "expanded"
+   height rather than a separate value per state was deliberate — busy,
+   completed, and log-expanded can all transition into each other within
+   a single job, and resizing at every one of those micro-transitions
+   would be far more distracting than settling once at a height that
+   already fits all of them.
+
+**780 was measured precisely, not guessed** — same `GeometryReader`-on-
+`versionFooter` technique as the Advanced-mode fix (reads true layout
+position directly via `.frame(in:)` in a named coordinate space,
+unaffected by window/screen clipping). Measured bottomY: idle ~384, busy
+(progress bar) ~447, completed-with-log-expanded (log box at its 160
+*minimum*, only 20 mock lines) ~528. Worst case is a long real job with
+the log expanded, where `LogView`'s own `.frame(maxHeight: 320)` cap
+means up to ~160 more than the measured 528 — ~688 content + 28 padding
++ 52 toolbar ≈ 768; 780 adds a small buffer.
+
+**A real testing trap hit while verifying this**: an early "idle"
+screenshot appeared to already show the Reveal button and an expanded
+log — looked like the fix wasn't working. Actual cause: `logExpanded`
+(`@AppStorage`) had been left `true` from an *earlier* round of this
+same testing session, so "idle" wasn't actually idle — `defaults delete
+com.local.grab logExpanded` before relaunching fixed it, and idle
+correctly showed the compact 352 height afterward. Worth remembering
+whenever a mock/test state seems to not match what the code should
+produce: check for a stale `@AppStorage` value left over from a *prior*
+test in the same session before assuming the code is wrong.
+
+**Verified**: real Xcode build after every change. Visually verified via
+screenshot, three states, each with window bounds re-queried immediately
+before capturing (an earlier attempt that reused a stale bounds query
+produced a screenshot region that didn't match the window's actual
+current size — fixed by always querying fresh bounds right before each
+capture): idle at 352 (compact, matches pre-existing documented
+behavior, unchanged), busy at 780 (progress bar fully visible, nothing
+clipped), and completed-with-log-expanded at 780 (Reveal-in-Finder
+button, full 20-line log, and version footer all simultaneously visible
+with no clipping). Manual resizability untouched —
+`.windowResizability(.automatic)` still governs both directions; this
+only changes what height each state's *default* snaps to.
+
+## Paste-and-fetch toolbar button
+
+A small icon button (`doc.on.clipboard` SF Symbol) sits immediately left
+of the URL field in the toolbar, in both modes. Reads
+`NSPasteboard.general.string(forType: .string)`, and if it parses as a
+`URL` with an `http`/`https` scheme, fills `viewModel.urlString` and
+calls the same `handleURLFieldSubmit()` the URL field's own `onSubmit`
+already used — Advanced fetches formats directly, Basic runs the full
+silent-fetch-then-open-resolution-sheet flow (`startBasicFlow`). One
+click replaces copy-link-in-browser → switch to Grab → paste → Fetch
+Formats with copy-link → switch to Grab → click. An invalid/empty
+clipboard leaves the URL field untouched and sets `viewModel.lastError`
+to "Clipboard doesn't contain a URL." — reusing the same error-surfacing
+`lastError` text already shown by every other fetch/download failure in
+this file, rather than adding a second toast/banner mechanism for one
+edge case.
+
+**A real toolbar-layout regression surfaced and got fixed while adding
+this**: the first attempt put the button and the `TextField` together in
+one `HStack` inside the existing single `.principal` `ToolbarItem`.
+Built and screenshotted — the *entire* URL field (and everything to its
+right) vanished from the toolbar into the overflow chevron, at the exact
+same 900pt window width that fit everything fine before this change.
+Splitting into two separate `.principal` `ToolbarItem`s (button, then
+`TextField`, no shared `HStack`) didn't fix it either — the field still
+overflowed, just the button now won the fight for space instead. Root
+cause was genuinely simple, not a SwiftUI toolbar-layout quirk: there
+just wasn't enough width. Fixed by widening the window — root content
+`.frame(minWidth:)` 820 → 860, and `GrabApp.swift`'s `.defaultSize`
+width 900 → 940 — which only *adds* room, so it can't have made
+anything that already fit worse. Re-verified: paste button and URL
+field both visible, button correctly positioned immediately left of the
+field, at the new default width.
+
+**The Fetch Formats/Best Quality/Download toolbar buttons were already
+overflowing into the chevron at this window width before this change
+too** — confirmed by the same screenshots (they weren't visible even
+before the paste button was added, at the original 900pt width).
+Pre-existing, unrelated to this feature, and out of scope here — a
+strictly wider window can only reveal more toolbar content, never less,
+so widening for the paste button couldn't have caused or worsened it.
+
+**Verified for real**, not just by inspecting the built argument
+strings: set the system clipboard to the real "Me at the zoo" test URL
+(`pbcopy`), triggered `pasteFromClipboardAndFetch()` (temporarily called
+from `.task` for the duration of the test, reverted after), and
+confirmed via debug logging that `viewModel.urlString` was populated,
+`isFetchingFormats` flipped `true`, and — after the real `yt-dlp -J`
+call completed — `formats.count == 11` and `videoMetadata.title == "Me
+at the zoo"` with `lastError == nil`. Separately set the clipboard to
+plain non-URL text and confirmed `urlString` stayed empty,
+`isFetchingFormats` stayed `false` (no doomed fetch attempt), and
+`lastError` read exactly "Clipboard doesn't contain a URL." Visually
+verified via screenshot (same mock-injection-in-`.task`-then-revert
+pattern used throughout this file) that the button renders correctly
+positioned in both Basic and Advanced mode. Real Xcode build succeeded
+after every change; no debug/mock code left in the final diff.
+
 ## Video metadata display
 
 Shows the fetched video's title/thumbnail/duration/channel in both modes
@@ -2052,6 +2275,15 @@ Run from the repo root:
 That's the whole release process. No separate "remember to sign" step
 exists anymore because `release.sh` won't finish successfully without
 doing it — the signing happens before the script ever touches git.
+
+**Tone for release notes / commit messages written during a release**:
+sound like a nonchalant coder, not marketing copy. Lowercase-ish, dry,
+no exclamation points, no "🎉 excited to announce," no bullet-pointed
+feature-marketing language. Something like "added sparkle auto-updates,
+should just work now" rather than "Introducing seamless auto-updates!"
+— casual and a little understated, like a commit message to yourself,
+not a press release. Applies to the `gh release create --notes` text and
+the version-bump/appcast commit messages in this workflow.
 
 **This is a git repo now** (it wasn't for the first two sessions of work —
 initialized this session, `main` branch, no `.git` history prior to the
