@@ -1865,12 +1865,17 @@ display in both modes + the resolution sheet, Basic mode's ProRes tier
 picker and delete-source-after-conversion toggle, "Best available"
 pre-selected by default, per-mode window sizing — see "Video metadata
 display" and "Basic / Advanced mode" above; real new user-facing
-features, hence minor rather than patch). The version-bump-then-release
-workflow (`project.yml`'s `MARKETING_VERSION` → `scripts/release.sh` →
-`git tag`/`gh release create`) was validated a fourth time end-to-end for
-v1.2.0 with no surprises, confirming the single-source-of-truth versioning
-fix from v1.0.0 (see "Versioning" below) holds up across repeated
-releases, not just the first one.
+features, hence minor rather than patch) → `v1.3.0` (minor: the
+SectionCard visual-polish pass — see "Visual polish pass" above — plus
+its two follow-up fixes, the content-area wallpaper/backdrop color-bleed
+fix and Advanced mode's ProRes Tier default correction; a visible
+redesign of the main window, not just a bug fix, hence minor rather than
+patch despite including fixes). The version-bump-then-release workflow
+(`project.yml`'s `MARKETING_VERSION` → `scripts/release.sh` → `git tag`/
+`gh release create`) was validated a fifth time end-to-end for v1.3.0
+with no surprises, confirming the single-source-of-truth versioning fix
+from v1.0.0 (see "Versioning" below) holds up across repeated releases,
+not just the first one.
 
 **A commit gap existed between v1.1.1 and v1.2.0**: several sessions'
 worth of work (Basic mode's ProRes tier picker/delete-source toggle,
