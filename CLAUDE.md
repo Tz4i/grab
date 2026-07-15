@@ -2011,6 +2011,48 @@ QuickTime tag, matching what "422" is supposed to mean).
 
 ## Release & distribution
 
+### How to release a new version (checklist)
+
+The mechanics behind every step here are explained in detail further down
+this section and in "Auto-updates (Sparkle)" above — this is just the
+condensed, do-this-in-order version, specifically so the Sparkle-signing
+step doesn't get forgotten (that was the whole point of adding it here).
+Run from the repo root:
+
+1. **Bump the version** — edit `project.yml`, bump `MARKETING_VERSION`
+   *and* `CURRENT_PROJECT_VERSION` to the same new value (both — see
+   "Versioning" below for why they must move together now). Commit that
+   change by itself (`git commit -m "Bump version to X.Y.Z"`).
+2. **Build, sign, and update the feed** — run `./scripts/release.sh`. This
+   one command does all of: `xcodegen generate`, a Release `xcodebuild`,
+   DMG packaging into `build/`, downloading/caching Sparkle's `sign_update`
+   tool if it isn't already cached, EdDSA-signing the DMG (reads the
+   private key from this Mac's Keychain automatically — see "Auto-updates
+   (Sparkle)" above if that fails), and updating + committing + pushing
+   `appcast.xml` for the new version. It prints the exact next two
+   commands (step 3) when it finishes.
+3. **Tag and publish the GitHub release immediately after** — don't let a
+   gap open up here, since step 2 already pushed an `appcast.xml` pointing
+   at a release asset URL that doesn't exist until this step runs:
+
+   ```sh
+   git tag vX.Y.Z && git push origin vX.Y.Z
+   gh release create vX.Y.Z "build/Grab-X.Y.Z.dmg" --title "Grab vX.Y.Z" --notes "..."
+   ```
+4. **Verify the feed is actually live** (cheap, worth doing every time):
+
+   ```sh
+   curl -sI "https://github.com/<owner>/<repo>/releases/download/vX.Y.Z/Grab-X.Y.Z.dmg" | head -3
+   curl -s "https://raw.githubusercontent.com/<owner>/<repo>/main/appcast.xml" | grep -A2 "<sparkle:shortVersionString>X.Y.Z<"
+   ```
+
+   The first command should redirect (not 404); the second should show
+   the new version's entry with a real `sparkle:edSignature`.
+
+That's the whole release process. No separate "remember to sign" step
+exists anymore because `release.sh` won't finish successfully without
+doing it — the signing happens before the script ever touches git.
+
 **This is a git repo now** (it wasn't for the first two sessions of work —
 initialized this session, `main` branch, no `.git` history prior to the
 "Initial commit" that captured the pre-existing app as a baseline).
@@ -2024,15 +2066,22 @@ user choice (asked directly), not a default/oversight. Packaged as a DMG
 via `scripts/release.sh` for GitHub Releases.
 
 **GitHub repo visibility**: started **private**, flipped to **public**
-partway through this session (`gh repo edit --visibility public
---accept-visibility-change-consequences`, confirmed with the user first)
-because the app-update check (see "Update checking" below) needs
+partway through an early session (`gh repo edit --visibility public
+--accept-visibility-change-consequences`, confirmed with the user first),
+originally because the old `AppUpdateService` app-update check needed
 unauthenticated GitHub API access to releases, which doesn't work on a
-private repo. Already under MIT (`LICENSE` was added in anticipation of
-this before the flip even happened). If this repo ever needs to go
-private again, remember the app-update check will then silently find
-nothing (by design — it fails silent, not loud) rather than erroring
-visibly, so that regression could go unnoticed.
+private repo. That specific check is gone now (see "Auto-updates
+(Sparkle)" above), but **the repo still has to stay public for the same
+underlying reason, just via different traffic**: `SUFeedURL` points at
+`raw.githubusercontent.com`, and the DMG enclosure URLs point at GitHub
+release assets — both 404 unauthenticated on a private repo exactly like
+the old REST API call did. Already under MIT (`LICENSE` was added in
+anticipation of this before the flip even happened). If this repo ever
+needs to go private again, Sparkle's checks would then silently fail to
+fetch the feed at all (network failure, not a parse error) — unlike the
+old check, this wouldn't even fail quietly-by-design, it'd just look like
+"the internet is down" to Sparkle every time, so that regression could
+easily go unnoticed for a while.
 
 **Release history**: `v1.0.0` (first release, ad-hoc DMG, established the
 process) → `v1.1.0` (dependency setup screen + disclaimers, yt-dlp/app
@@ -2050,12 +2099,28 @@ SectionCard visual-polish pass — see "Visual polish pass" above — plus
 its two follow-up fixes, the content-area wallpaper/backdrop color-bleed
 fix and Advanced mode's ProRes Tier default correction; a visible
 redesign of the main window, not just a bug fix, hence minor rather than
-patch despite including fixes). The version-bump-then-release workflow
-(`project.yml`'s `MARKETING_VERSION` → `scripts/release.sh` → `git tag`/
-`gh release create`) was validated a fifth time end-to-end for v1.3.0
-with no surprises, confirming the single-source-of-truth versioning fix
-from v1.0.0 (see "Versioning" below) holds up across repeated releases,
-not just the first one.
+patch despite including fixes) → `v1.4.0` (minor: Sparkle in-app
+auto-updates — see "Auto-updates (Sparkle)" above; a real new
+user-facing feature, hence minor). The version-bump-then-release
+workflow (`project.yml`'s `MARKETING_VERSION` → `scripts/release.sh` →
+`git tag`/`gh release create`) was validated a sixth time end-to-end for
+v1.4.0, now with the Sparkle-signing step folded into `release.sh`
+itself — the whole pipeline ran for real, not just individually
+spot-checked pieces: `sign_update` produced a real signature for the
+real packaged `Grab-1.4.0.dmg`, `update_appcast.py` inserted a real new
+entry above the existing v1.3.0 one, `appcast.xml` was committed and
+pushed automatically by the script, and after `gh release create`
+finished, both the DMG URL (`curl -sI`, real `302` redirect to the
+actual asset, not a `404`) and the raw appcast URL (`curl`, showing the
+new entry with a real `sparkle:edSignature`) were confirmed live —
+confirming the single-source-of-truth versioning fix from v1.0.0 (see
+"Versioning" below) holds up across repeated releases, and that the
+Sparkle pipeline added this session actually works end-to-end, not just
+in isolated pieces. **Not** verified: a real older Sparkle-enabled build
+actually detecting and installing this update through Sparkle's UI —
+v1.4.0 is the *first* version that ships with Sparkle at all, so no
+older build exists that could have auto-updated *to* it; the next
+release will be the first real test of that specific path.
 
 **A commit gap existed between v1.1.1 and v1.2.0**: several sessions'
 worth of work (Basic mode's ProRes tier picker/delete-source toggle,
