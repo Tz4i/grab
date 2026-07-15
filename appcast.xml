@@ -15,6 +15,14 @@
         <language>en</language>
         <!-- ITEMS MARKER: new release items are inserted right after this comment -->
         <item>
+            <title>Version 1.5.0</title>
+            <pubDate>Wed, 15 Jul 2026 23:22:46 +0000</pubDate>
+            <sparkle:version>1.5.0</sparkle:version>
+            <sparkle:shortVersionString>1.5.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/Tz4i/grab/releases/download/v1.5.0/Grab-1.5.0.dmg" sparkle:edSignature="h5rRjvj1nluedoGpMOakIhNHwbTXloPdkvHTOGI4u61haSjTosp4NrEcXBEtBEP4uTShjQshEGY2ZgL45m0EAQ==" length="2027220" type="application/octet-stream" />
+        </item>
+        <item>
             <title>Version 1.4.0</title>
             <pubDate>Wed, 15 Jul 2026 05:42:12 +0000</pubDate>
             <sparkle:version>1.4.0</sparkle:version>
