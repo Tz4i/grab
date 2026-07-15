@@ -1597,6 +1597,238 @@ unavailable reason — the pieces it's built from (the real fetch, and the
 UI states driven by `videoMetadata`) were each verified independently as
 above.
 
+## Visual polish pass (SectionCard, materials, typography)
+
+Styling-only follow-up session — no functionality, layout structure, or
+download/convert logic touched, per an explicit constraint. Goal was to
+make Grab read as more modern/premium while staying a native macOS
+utility (no iOS patterns), legible in both light and dark mode.
+
+**`SectionCard`** (new private view, `ContentView.swift`, near
+`WindowAccessor`): the shared "gently raised surface" wrapper now used by
+all four top-level sections — Formats, Download, Output, Conversion. Icon
++ bold `.headline` title row, `.thickMaterial` background, `RoundedRectangle`
+corner radius 14, a hairline `Color.primary.opacity(0.07)` stroke border,
+and a soft `.shadow(color: .black.opacity(0.16), radius: 8, y: 3)`. All
+native SwiftUI (material + shadow modifiers), no hand-rolled blur/gradient.
+`formatsSection` was converted from a plain `GroupBox` to `SectionCard`;
+`downloadOptionsSection`/`outputFolderSection`/`conversionSection` each
+now wrap their existing `Form(.grouped)` in a `SectionCard`, with the
+`Form`'s own `Section("...")` title removed (passed as an untitled
+`Section { ... }`) so there's exactly one header per card, not two. The
+`Form`'s native grouped-row background is untouched and still opaque —
+nesting an opaque native list inside a translucent card is what gives the
+"layered chrome, solid content" look the spec asked for, verified by
+sampling actual rendered pixel color (see below).
+
+**Content-vs-chrome opacity, verified by pixel sampling, not just eyeballing**:
+this dev machine's current desktop wallpaper is reddish/maroon-toned, which
+made it easy to empirically confirm the "solid content surfaces, translucent
+chrome" split actually holds and isn't just claimed. Sampled raw RGB via
+`PIL.Image.getpixel` on real screenshots: the video-info card's fill (now
+`Color(nsColor: .textBackgroundColor)`, changed from the old
+`.quaternary.opacity(0.5)` specifically because quaternary is itself a
+translucent system color — dense text sitting on it doesn't meet "solid,
+legible" now that shadows/materials are used elsewhere) sampled as neutral
+`(23,23,23)` — no wallpaper bleed. The `SectionCard`/root-window materials
+sampled as warm-tinted `(42,30,28)` / `(40,27,26)` — i.e. **do** pick up the
+backdrop, which is the correct, expected behavior for `.thickMaterial`/
+`.regularMaterial` and is what "layered translucent chrome" means; it'll
+read as a neutral tint on a typical neutral wallpaper, this machine's
+wallpaper just makes the effect obvious. `LogView` and the formats `Table`
+were left as pre-existing solid backgrounds (`textBackgroundColor` and
+Table's own native row background respectively) — already correct, no
+change needed there.
+
+**Advanced mode's fixed window height bumped 780 → 1160**: adding a
+14pt-padded, `.headline`-height header to three previously-compact
+`Form(.grouped)` sections (Download/Output/Conversion) plus the Formats
+card's own new padding meant the pre-existing hardcoded 780 (see "Per-mode
+window height" above) started clipping the Conversion section and the log
+disclosure/version footer entirely — no scroll view exists to fall back
+on. Caught by *not* trusting the padding additions to be visually free —
+temporarily hardcoded a much taller height (1400), rebuilt, screenshotted,
+and confirmed real content extended well past 780. Re-tuned the constant
+empirically at several sizes (1000 → 1140 → 1160) via the same
+build-relaunch-screenshot loop until the version footer was fully on
+screen with only a small margin — not a guess. `SectionCard`'s own padding/
+header were also trimmed once (14pt padding/`.title3` header down to
+10pt/`.headline`) specifically to keep this height increase from being
+larger still — a bigger, emptier-feeling window was treated as a real
+regression against this session's own "no empty dead space" constraint,
+not an acceptable side effect of "more corner rounding."
+
+**Selected-row accent highlighting added to `BasicResolutionSheet`**: the
+resolution list and the ProRes tier list already showed a filled vs.
+outline SF Symbol circle for the selected row; added a matching
+`Color.accentColor.opacity(0.1–0.12)` row background (`RoundedRectangle`
+cornerRadius 6) so the selected state reads clearly at a glance, not just
+via the small circle glyph — consistent, accent-colored "selected state"
+styling was one of the explicit asks.
+
+**Root `VStack` spacing/padding**: 10/12 → 12/14 (a small, deliberate
+tightening-then-loosening pass, not arbitrary — tuned alongside the
+`SectionCard` padding trim above so total added chrome stayed as small as
+it could while still reading as "intentional," per the same dead-space
+constraint).
+
+**Verified**: real `xcodebuild ... build` → `BUILD SUCCEEDED` after every
+edit (several iterations, not just the final one). Visually verified via
+screenshot in both light and dark mode (same mock-injection-in-`.task`-
+then-revert pattern as every prior UI session in this file — reverted
+before finishing, confirmed by a final clean build with the mock block
+removed): Advanced mode populated with synthetic multi-resolution/codec
+formats at the new 1160 default height (nothing clipped, in both
+appearances), Basic mode's compact card-based Output section, and the
+`BasicResolutionSheet` with ProRes on (tier list + selected-row highlight
+visible). This session's dark-mode toggling used
+`osascript -e 'tell application "System Events" to tell appearance
+preferences to set dark mode to <bool>'` rather than the `defaults write
+-g AppleInterfaceStyle` key this file has used in the past — on this
+machine's OS build, reading/writing that legacy key no longer reflects or
+changes the real effective appearance (confirmed: `defaults read -g
+AppleInterfaceStyle` reported no key/"light" while the real rendered
+appearance and `System Events`' own `dark mode of appearance preferences`
+property both said the system was actually in Dark). Worth knowing if a
+future session's light/dark toggle via the old `defaults` key silently
+doesn't do anything — check `System Events`' `appearance preferences`
+directly instead of assuming the key is stale/wrong. System appearance
+and this session's `com.local.grab` testing defaults (`appMode`,
+`hasCompletedOnboarding`, `hasAcknowledgedDisclaimer`, the window frame
+autosave) were all restored/cleared before finishing, same as this file's
+standing practice.
+
+### Follow-up fix: wallpaper/backdrop color bleeding through content
+
+The polish pass above shipped with a real bug: the whole window had a
+visible warm color cast, tracked down to two distinct causes, both
+involving `Material`/vibrancy sampling whatever's behind the window rather
+than staying opaque.
+
+**Cause 1 — the root content background was a `Material`, not a color.**
+`ContentView`'s root `VStack` had `.background(.regularMaterial)` covering
+the *entire* content area (all cards, not just window chrome) — inherited
+from the original "Window chrome translucency" work, which (reasonably,
+at the time) assumed a single root material would only visually read as
+title-bar vibrancy. Fixed by replacing it with
+`.background(Color(nsColor: .windowBackgroundColor))` — a plain opaque
+system color — and switching `SectionCard`'s own `.thickMaterial`
+background to `Color(nsColor: .controlBackgroundColor)` the same way. The
+toolbar/title-bar strip keeps its own native vibrancy for free regardless
+of this change — that's AppKit's automatic unified-toolbar behavior
+(triggered by `.toolbar` being present at all, see "Window chrome
+translucency" above), a separate drawing layer from this VStack's own
+background, never touched by this fix.
+
+**Cause 2 — `Form(.grouped)`'s own internal Section box is *itself*
+vibrant, independent of whatever view it's embedded in.** This one was
+much less obvious and cost real time to isolate: even after fixing cause
+1, the Download/Output/Conversion cards *still* showed a visible tint —
+but only inside the Form's actual row area, not in the `SectionCard`'s own
+padding gutter around it. Confirmed with a minimal standalone `swiftc`
+harness (`WindowGroup` + a `SectionCard` copy + a bare `Form { Section {
+Toggle(...) } }.formStyle(.grouped)`, run for real and screenshotted): a
+flat `Color` swatch filling a window was neutral, but the exact same color
+used as `SectionCard`'s background rendered neutral *outside* the Form and
+visibly warm-tinted *inside* the Form's Section box — conclusively
+isolating the vibrancy to `Form(.grouped)`'s own internal rendering, not
+`SectionCard`, not the root background, not `.controlBackgroundColor`
+itself (a second harness test with four flat color swatches side by side
+showed `.controlBackgroundColor` alone is perfectly neutral). Fixed with
+`.scrollContentBackground(.hidden)` on every `Form(.grouped)` in the app —
+`downloadOptionsSection`/`outputFolderSection`/`conversionSection` in
+`ContentView`, and `SettingsView`'s Form too (same underlying defect,
+confirmed to apply there as well since it's a property of `Form(.grouped)`
+itself, not anything specific to `SectionCard`) — which turns off the
+Form's own system background so it shows whatever's actually behind it
+(now a plain opaque color, at every one of those call sites) instead.
+`SettingsView` also gained an explicit `.background(Color(nsColor:
+.windowBackgroundColor))` since hiding the Form's own background means it
+can no longer rely on an assumed-opaque Settings-window default.
+
+**This was almost certainly a pre-existing defect, not something the
+polish pass introduced** — `Form(.grouped)` was used for these three
+sections since long before this session, so cause 2 likely already tinted
+these sections against colorful wallpaper before any of this session's
+changes; it just wasn't as visually obvious back when the *whole* window
+was already uniformly tinted by cause 1, and became obviously wrong only
+once cause 1 was fixed and the Form rows stood out against an otherwise-
+neutral surroundings.
+
+**Verified by pixel value, not by eye** — screenshots were sampled with
+`PIL.Image.getpixel` at multiple points (video card, `SectionCard` gutter,
+Form row interior, inter-card window gap) before and after each fix, in
+both light and dark mode, confirming exact `R == G == B` (genuinely
+neutral, zero hue) everywhere in content, vs. a visible `R > G ≈ B` warm
+skew before the fix. Tested against a real, strongly saturated backdrop —
+a full-screen magenta/cyan diagonal-stripe HTML page opened in Safari and
+resized (via `osascript -e 'tell application "Safari" to set bounds of
+front window to {x, y, w, h}'`, a plain Apple Event property set that
+doesn't need Accessibility permission, unlike UI-scripting) to sit
+directly behind Grab's window — chosen over changing the actual desktop
+wallpaper specifically to avoid repeating the unrecoverable-Aerial-
+wallpaper mistake documented earlier in this file ("Test wallpaper note"),
+while still being an equally valid test: `NSVisualEffectView`/`Material`
+sampling doesn't care whether what's behind the window is the literal
+desktop picture or another app's window, only what the compositor
+actually renders there. The toolbar strip was also sampled and confirmed
+to retain a small, expected native tint (e.g. `(32,24,24)` vs. a neutral
+`(23,23,23)` immediately below it) — consistent with how a real macOS
+title bar normally behaves against a saturated wallpaper (Finder/Safari
+do the same), and confined to that thin strip rather than bleeding into
+content, which is what "limit translucency to the window chrome" means
+in practice here; no custom `NSVisualEffectView`/blending-mode code was
+added for the toolbar since its existing automatic native vibrancy already
+satisfies that.
+
+### Follow-up fix: Advanced mode's ProRes Tier default
+
+Advanced mode's `@AppStorage("proResTier")` (`ContentView.swift`) had been
+`.hq` ("422 HQ") in every single commit in this repo's history — despite
+prior sessions apparently believing they'd changed it to `.standard`
+("422"), `git log -p` on this line showed it was never actually committed
+as anything but `.hq`. Fixed by changing the default to `.standard`.
+
+**Not a persisted-value problem this time** — checked first, since that's
+the other classic way a default change silently "doesn't take" (`Basic
+Mode`'s `@AppStorage("basicProResTier")` already defaults correctly to
+`.standard` via `ProResTier.basicModeDefault`, for contrast). `defaults
+read com.local.grab proResTier` had no key at all on this dev machine, so
+the code-level default really was the only thing controlling what a fresh
+launch shows — it just had never actually been edited.
+
+**A real debugging trap hit while verifying this, worth recording**: a
+`Grab.app` process launched earlier in the session (with Xcode's
+`-NSDocumentRevisionsDebugMode YES` flag, meaning Xcode's own Run action
+had started it at some point, not a plain `open`) kept surviving `pkill -x
+Grab` *and* `kill -9 <pid>` *and* `osascript -e 'tell application "Grab"
+to quit'` (the last one returned "AppleEvent timed out") — every rebuild
+kept getting screenshotted through that same stale process (same
+`CGWindowNumber` before and after each "fresh" launch), so code changes
+looked like they weren't taking effect at all. Diagnosed by temporarily
+setting the default to something visually unmistakable (`.proxy`,
+"Proxy") — if a rebuild+relaunch still showed the *old* label, that would
+prove the running process wasn't actually being replaced, independent of
+whatever the real fix was supposed to be. Resolved itself once that
+particular process was gone (a plain `osascript -e 'tell application
+"Grab" to quit'` worked cleanly on the *next* freshly-launched instance,
+and its window had a distinctly new `CGWindowNumber` — the tell to confirm
+you're actually looking at a new process, not the old one still holding
+the window). **If a rebuilt app ever seems to completely ignore a source
+change no matter how certain the edit/build looks correct, check for a
+stuck previously-debugged instance (`ps aux | grep Grab`, look for
+`-NSDocumentRevisionsDebugMode`) before assuming the code change itself is
+wrong** — this cost real time chasing a phantom "the default isn't taking"
+theory before the actual stuck-process cause was found.
+
+**Verified**: `defaults delete com.local.grab proResTier` (confirmed no
+key existed even before this), rebuilt, launched a genuinely fresh process
+(confirmed via a new `CGWindowNumber`), screenshotted — Tier reads "422",
+not "422 HQ" or "Proxy". `.standard`'s label is `"422"` per `Models.swift`
+(rawValue 2 — separately confirmed in an earlier session's real
+`ffprobe`-verified codec-tag test that profile 2 produces the `apcn`
+QuickTime tag, matching what "422" is supposed to mean).
+
 ## Release & distribution
 
 **This is a git repo now** (it wasn't for the first two sessions of work —

@@ -42,7 +42,7 @@ struct ContentView: View {
     @State private var showBasicResolutionSheet = false
 
     @AppStorage("conversionMode") private var conversionMode: ConversionMode = .none
-    @AppStorage("proResTier") private var proResTier: ProResTier = .hq
+    @AppStorage("proResTier") private var proResTier: ProResTier = .standard
     @AppStorage("h264Quality") private var h264Quality: H264Quality = .medium
     @AppStorage("downscale4K") private var downscale4K = false
     @AppStorage("deleteSourceAfterConversion") private var deleteSourceAfterConversion = false
@@ -84,8 +84,13 @@ struct ContentView: View {
     /// allowed, just not persisted across a mode switch).
     /// Advanced mode's default is a fixed, historically-tuned height (its
     /// content — formats table + full conversion controls — easily
-    /// exceeds any natural minimum, so hardcoding is fine and matches
-    /// this app's pre-existing default). Basic mode instead uses
+    /// exceeds any natural minimum, so hardcoding is fine). Bumped from
+    /// the original 780 to 1160 when the visual-polish pass wrapped each
+    /// section in a padded/headered `SectionCard` — re-measured empirically
+    /// (temporarily forcing a tall window and screenshotting) so the
+    /// Conversion section and the log disclosure/version footer stay on
+    /// screen instead of being clipped by a now-too-short fixed height.
+    /// Basic mode instead uses
     /// `hostWindow.minSize.height` — the natural minimum height SwiftUI's
     /// `.windowResizability(.automatic)` already computed from Basic
     /// mode's actual rendered content — rather than a second hardcoded
@@ -98,7 +103,7 @@ struct ContentView: View {
     /// computed minimum sidesteps needing to guess a number that matches
     /// the real content at all.
     private func defaultWindowHeight(for mode: AppMode, window: NSWindow) -> CGFloat {
-        mode == .advanced ? 780 : window.minSize.height
+        mode == .advanced ? 1160 : window.minSize.height
     }
 
     /// Resizes the hosting window to the given mode's default height,
@@ -122,7 +127,7 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             updateBannersSection
             videoInfoSection
             if appMode == .advanced {
@@ -138,9 +143,23 @@ struct ContentView: View {
             statusSection
             versionFooter
         }
-        .padding(12)
+        .padding(14)
         .frame(minWidth: 820, minHeight: appMode == .advanced ? 620 : 300, alignment: .top)
-        .background(.regularMaterial)
+        // Solid, neutral, opaque — NOT a material. A material here (the
+        // previous `.background(.regularMaterial)`) sat behind the *entire*
+        // content VStack, not just window chrome, so every card/table/form
+        // sample-blended with whatever was behind the window (wallpaper,
+        // other app windows) and picked up its color — a warm wallpaper
+        // gave the whole app a warm cast, confirmed by pixel-sampling real
+        // screenshots. `.windowBackgroundColor` is the standard native
+        // "opaque window content background" color and does not vibrate/
+        // sample a backdrop the way `Material` does. The toolbar/title bar
+        // above this content view keeps its own native translucent
+        // vibrancy automatically (from `.toolbar` being present at all —
+        // see "Window chrome translucency" in CLAUDE.md) — that's a
+        // separate AppKit-drawn region from this VStack's background, so
+        // removing the material here doesn't affect it.
+        .background(Color(nsColor: .windowBackgroundColor))
         .background(
             WindowAccessor { window in
                 guard hostWindow !== window else { return }
@@ -408,7 +427,11 @@ struct ContentView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.accentColor.opacity(0.18), lineWidth: 1)
+        )
     }
 
     // MARK: - Video info (title / thumbnail / duration / channel)
@@ -457,7 +480,11 @@ struct ContentView: View {
             Spacer(minLength: 0)
         }
         .padding(prominent ? 14 : 8)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+        )
     }
 
     private func videoThumbnail(url: URL?) -> some View {
@@ -484,27 +511,21 @@ struct ContentView: View {
     // MARK: - Formats
 
     private var formatsSection: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                formatsContent
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+        SectionCard(title: "Formats", systemImage: "film") {
+            formatsContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                if !viewModel.formats.isEmpty {
-                    Divider()
-                    HStack {
-                        Toggle("Use best audio automatically", isOn: $viewModel.useBestAudio)
-                        Toggle("Hide below 720p", isOn: $hideBelow720p)
-                        Spacer()
-                        Text(selectionSummaryText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+            if !viewModel.formats.isEmpty {
+                Divider()
+                HStack {
+                    Toggle("Use best audio automatically", isOn: $viewModel.useBestAudio)
+                    Toggle("Hide below 720p", isOn: $hideBelow720p)
+                    Spacer()
+                    Text(selectionSummaryText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .padding(6)
-        } label: {
-            Label("Formats", systemImage: "film")
-                .font(.headline)
         }
     }
 
@@ -635,23 +656,35 @@ struct ContentView: View {
     // MARK: - Download options
 
     private var downloadOptionsSection: some View {
-        Form {
-            Section("Download") {
-                Toggle("Prefer MP4 container", isOn: $preferMP4)
-                if preferMP4 {
-                    Text("Prefers mp4 video / m4a audio at the same resolution. If a resolution is only "
-                        + "available as webm (common at 8K), it will still download webm rather than "
-                        + "dropping resolution.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        SectionCard(title: "Download", systemImage: "arrow.down.circle") {
+            Form {
+                Section {
+                    Toggle("Prefer MP4 container", isOn: $preferMP4)
+                    if preferMP4 {
+                        Text("Prefers mp4 video / m4a audio at the same resolution. If a resolution is only "
+                            + "available as webm (common at 8K), it will still download webm rather than "
+                            + "dropping resolution.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Toggle("Reduce request rate", isOn: $sleepInterval)
+                        .help("Sleeps a few seconds before each download. Can help reduce bot-detection triggers.")
                 }
-                Toggle("Reduce request rate", isOn: $sleepInterval)
-                    .help("Sleeps a few seconds before each download. Can help reduce bot-detection triggers.")
             }
+            .formStyle(.grouped)
+            // `Form(.grouped)`'s own Section box renders with a vibrant
+            // internal background on this system (confirmed by an isolated
+            // test harness: real desktop/backdrop color visibly bled through
+            // the grouped Section's row area even though this Form sits on
+            // an already-opaque SectionCard). `.scrollContentBackground(.hidden)`
+            // turns that off so the rows show the plain opaque SectionCard
+            // background behind them instead — verified neutral via pixel
+            // sampling with a saturated magenta/cyan backdrop directly behind
+            // the window.
+            .scrollContentBackground(.hidden)
+            .fixedSize(horizontal: false, vertical: true)
+            .disabled(viewModel.isBusy)
         }
-        .formStyle(.grouped)
-        .fixedSize(horizontal: false, vertical: true)
-        .disabled(viewModel.isBusy)
     }
 
     // MARK: - Output section
@@ -660,68 +693,74 @@ struct ContentView: View {
     /// "Shared behavior": output folder setting is identical in both).
     /// Split out from the conversion controls below, which are Advanced-only.
     private var outputFolderSection: some View {
-        Form {
-            Section("Output") {
-                LabeledContent("Folder") {
-                    HStack(spacing: 8) {
-                        Text(outputDirectoryPath)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .foregroundStyle(.secondary)
-                        Button("Choose…") { chooseOutputDirectory() }
-                            .controlSize(.small)
+        SectionCard(title: "Output", systemImage: "folder") {
+            Form {
+                Section {
+                    LabeledContent("Folder") {
+                        HStack(spacing: 8) {
+                            Text(outputDirectoryPath)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .foregroundStyle(.secondary)
+                            Button("Choose…") { chooseOutputDirectory() }
+                                .controlSize(.small)
+                        }
                     }
                 }
             }
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .fixedSize(horizontal: false, vertical: true)
+            .disabled(viewModel.isBusy)
         }
-        .formStyle(.grouped)
-        .fixedSize(horizontal: false, vertical: true)
-        .disabled(viewModel.isBusy)
     }
 
     private var conversionSection: some View {
-        Form {
-            Section("Conversion") {
-                Picker("Convert to", selection: $conversionMode) {
-                    ForEach(ConversionMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
-
-                if let description = conversionMode.tradeoffDescription {
-                    Text(description)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                switch conversionMode {
-                case .none:
-                    EmptyView()
-                case .proRes:
-                    Picker("Tier", selection: $proResTier) {
-                        ForEach(ProResTier.allCases) { tier in
-                            Text(tier.label).tag(tier)
+        SectionCard(title: "Conversion", systemImage: "wand.and.stars") {
+            Form {
+                Section {
+                    Picker("Convert to", selection: $conversionMode) {
+                        ForEach(ConversionMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
                         }
                     }
-                case .h264:
-                    Picker("Quality", selection: $h264Quality) {
-                        ForEach(H264Quality.allCases) { quality in
-                            Text(quality.label).tag(quality)
+
+                    if let description = conversionMode.tradeoffDescription {
+                        Text(description)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    switch conversionMode {
+                    case .none:
+                        EmptyView()
+                    case .proRes:
+                        Picker("Tier", selection: $proResTier) {
+                            ForEach(ProResTier.allCases) { tier in
+                                Text(tier.label).tag(tier)
+                            }
+                        }
+                    case .h264:
+                        Picker("Quality", selection: $h264Quality) {
+                            ForEach(H264Quality.allCases) { quality in
+                                Text(quality.label).tag(quality)
+                            }
                         }
                     }
-                }
 
-                if conversionMode != .none {
-                    Toggle("Downscale to 4K (3840×2160)", isOn: $downscale4K)
-                    Toggle("Delete source file after conversion", isOn: $deleteSourceAfterConversion)
-                    Toggle("Use hardware acceleration", isOn: $useHardwareAcceleration)
-                        .help(hardwareAccelerationHelpText)
+                    if conversionMode != .none {
+                        Toggle("Downscale to 4K (3840×2160)", isOn: $downscale4K)
+                        Toggle("Delete source file after conversion", isOn: $deleteSourceAfterConversion)
+                        Toggle("Use hardware acceleration", isOn: $useHardwareAcceleration)
+                            .help(hardwareAccelerationHelpText)
+                    }
                 }
             }
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .fixedSize(horizontal: false, vertical: true)
+            .disabled(viewModel.isBusy)
         }
-        .formStyle(.grouped)
-        .fixedSize(horizontal: false, vertical: true)
-        .disabled(viewModel.isBusy)
     }
 
     private var hardwareAccelerationHelpText: String {
@@ -918,6 +957,11 @@ private struct BasicResolutionSheet: View {
                             }
                             .contentShape(Rectangle())
                             .padding(.vertical, 4)
+                            .padding(.horizontal, 6)
+                            .background(
+                                selected == choice ? Color.accentColor.opacity(0.12) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            )
                         }
                         .buttonStyle(.plain)
                     }
@@ -960,6 +1004,11 @@ private struct BasicResolutionSheet: View {
                                     }
                                     .contentShape(Rectangle())
                                     .padding(.vertical, 3)
+                                    .padding(.horizontal, 6)
+                                    .background(
+                                        proResTier == tier ? Color.accentColor.opacity(0.1) : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    )
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -1073,8 +1122,14 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        // Same fix as the main window's Form(.grouped) sections — see the
+        // comment on downloadOptionsSection above — plus an explicit opaque
+        // background so hiding the Form's own vibrant one doesn't leave
+        // this Settings window relying on an assumed-opaque default.
+        .scrollContentBackground(.hidden)
         .padding(20)
         .frame(width: 440)
+        .background(Color(nsColor: .windowBackgroundColor))
         .task { await refreshInstalledVersion() }
     }
 
@@ -1122,6 +1177,51 @@ private struct WindowAccessor: NSViewRepresentable {
     }
 }
 
+// MARK: - Section card
+
+/// Shared "gently raised surface" chrome for every top-level section
+/// (Formats, Download, Output, Conversion) — a solid, neutral, *opaque*
+/// card with a prominent icon+title header, soft shadow, and hairline
+/// border. Purely a visual container: it changes nothing about what each
+/// section contains or how it behaves, only how it's framed.
+///
+/// Deliberately **not** a `Material` (this used `.thickMaterial` originally,
+/// which was the bug: a real window sitting over a colorful desktop
+/// wallpaper sampled that color straight through every card, tinting the
+/// whole app). `Color(nsColor: .controlBackgroundColor)` is a plain opaque
+/// system color — it does not sample whatever's behind the window, so the
+/// card reads the same neutral gray no matter what wallpaper or other
+/// windows are behind Grab. Content areas are content, not window chrome;
+/// translucency stays scoped to the toolbar/title-bar strip, which gets
+/// its own native vibrancy for free from `.toolbar` being present (see
+/// "Window chrome translucency" in CLAUDE.md) — nothing to do here.
+private struct SectionCard<Content: View>: View {
+    let title: String
+    let systemImage: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label {
+                Text(title)
+                    .font(.headline)
+            } icon: {
+                Image(systemName: systemImage)
+                    .foregroundStyle(Color.accentColor)
+                    .font(.headline)
+            }
+            content()
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.16), radius: 8, x: 0, y: 3)
+    }
+}
+
 // MARK: - Log view
 
 private struct LogView: View {
@@ -1139,8 +1239,11 @@ private struct LogView: View {
                     .id("bottom")
             }
             .background(Color(nsColor: .textBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.25)))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
+            )
             .onChange(of: text) {
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
