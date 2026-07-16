@@ -51,7 +51,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.local.grab
-        MARKETING_VERSION: "1.5.0"
+        MARKETING_VERSION: "1.6.0"
         # Kept equal to MARKETING_VERSION from this release onward (was
         # hardcoded "1" forever before Sparkle existed, since nothing ever
         # compared it) -- Sparkle's default version comparator uses this
@@ -60,7 +60,7 @@ targets:
         # A CFBundleVersion that never changes would mean Sparkle can never
         # detect an update. Bump this alongside MARKETING_VERSION at every
         # release from now on -- see "Versioning" in CLAUDE.md.
-        CURRENT_PROJECT_VERSION: "1.5.0"
+        CURRENT_PROJECT_VERSION: "1.6.0"
         GENERATE_INFOPLIST_FILE: false
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_IDENTITY: "-"
