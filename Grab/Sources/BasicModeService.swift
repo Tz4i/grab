@@ -75,6 +75,54 @@ enum BasicModeService {
         }
         guard !candidates.isEmpty else { return nil }
 
+        return planFromCandidates(candidates, allFormats: formats, useProRes: useProRes, proResTier: proResTier)
+    }
+
+    /// Same "always end up with a playable file" decision as `plan(for:)`
+    /// above, but for a playlist queue job: `candidates` is pre-filtered
+    /// by `PlaylistFormatPolicy.heightCap` (a ceiling, not an exact match)
+    /// instead of an exact resolution choice. Falls back to the *uncapped*
+    /// pool when nothing exists at or below the cap (rare — a video whose
+    /// smallest format still exceeds the cap) rather than failing the job
+    /// outright, since "best up to 1080p" reads as a ceiling on quality,
+    /// not a hard requirement the video must satisfy or be skipped.
+    static func planForPolicy(
+        formats: [VideoFormat],
+        policy: PlaylistFormatPolicy,
+        useProRes: Bool,
+        proResTier: ProResTier
+    ) -> BasicDownloadPlan? {
+        let videoFormats = formats.filter { !$0.isAudioOnly }
+        guard !videoFormats.isEmpty else { return nil }
+
+        let pool: [VideoFormat]
+        if let cap = policy.heightCap {
+            let capped = videoFormats.filter { ($0.resolutionHeight ?? 0) <= cap }
+            pool = capped.isEmpty ? videoFormats : capped
+        } else {
+            pool = videoFormats
+        }
+
+        guard let overallBest = pool.max(by: { $0.resolutionPixels < $1.resolutionPixels }) else { return nil }
+        let candidates = pool.filter { $0.resolutionPixels == overallBest.resolutionPixels }
+        guard !candidates.isEmpty else { return nil }
+
+        return planFromCandidates(candidates, allFormats: formats, useProRes: useProRes, proResTier: proResTier)
+    }
+
+    /// Shared tail of `plan(for:)`/`planForPolicy` once a resolution tier's
+    /// `candidates` (all formats at the same target pixel count) has been
+    /// decided — the actual "always end up with a playable file"
+    /// guarantee: ProRes always re-encodes regardless of source codec;
+    /// otherwise prefer a direct H.264+AAC download with no re-encode, and
+    /// only fall back to a forced H.264 re-encode when no such source
+    /// exists at this tier.
+    private static func planFromCandidates(
+        _ candidates: [VideoFormat],
+        allFormats: [VideoFormat],
+        useProRes: Bool,
+        proResTier: ProResTier
+    ) -> BasicDownloadPlan? {
         if useProRes {
             // Convert to the chosen ProRes tier regardless of resolution/
             // source codec — container/codec of the source doesn't matter
@@ -92,7 +140,7 @@ enum BasicModeService {
         // audio: plays in QuickTime with no re-encode, no quality loss, no
         // wait.
         if let h264Video = candidates.last(where: { $0.vcodec.lowercased().hasPrefix("avc1") }),
-           let aacAudio = bestAACAudio(in: formats) {
+           let aacAudio = bestAACAudio(in: allFormats) {
             return BasicDownloadPlan(
                 formatSelector: "\(h264Video.id)+\(aacAudio.id)",
                 conversionMode: .none,

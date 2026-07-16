@@ -126,6 +126,71 @@ enum YTDLPService {
         return exact == nil ? "~\(formatted)" : formatted
     }
 
+    // MARK: - Playlist enumeration
+
+    /// Lists a playlist's entries quickly, without fetching full per-video
+    /// metadata/formats (`--flat-playlist` — verified for real against a
+    /// live 20-item YouTube playlist: top-level `title` + `entries`, each
+    /// entry carrying `id`/`title`/`duration` directly, no second request
+    /// needed per video). Used only for the selection-sheet checklist —
+    /// once the user picks which entries to queue, each queued job still
+    /// does its own full `fetchFormats` call at download time, since flat
+    /// mode never returns a format list.
+    static func fetchPlaylistEntries(
+        url: String,
+        cookiesFromBrowser: CookieBrowser,
+        runner: ProcessRunner
+    ) async -> Result<(title: String?, entries: [PlaylistEntry]), GrabError> {
+        var arguments = ["--flat-playlist", "-J", "--no-warnings"]
+        if let cookieValue = cookiesFromBrowser.commandLineValue {
+            arguments += ["--cookies-from-browser", cookieValue]
+        }
+        arguments.append(url)
+
+        let result = await runner.run(
+            path: Tool.ytdlp,
+            arguments: arguments,
+            qos: .userInitiated,
+            onOutput: { _ in }
+        )
+        if result.exitCode != 0 {
+            let message = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .failure(GrabError(message: message.isEmpty ? "yt-dlp exited with code \(result.exitCode)" : message))
+        }
+        guard let (title, entries) = parsePlaylistInfo(result.output) else {
+            return .failure(GrabError(message: "Could not read playlist information for this URL."))
+        }
+        if entries.isEmpty {
+            return .failure(GrabError(message: "This playlist has no videos."))
+        }
+        return .success((title, entries))
+    }
+
+    /// Same first-`{`-to-last-`}` defensive parsing as `parseVideoInfo`
+    /// above. Entries missing an `id` are skipped rather than failing the
+    /// whole parse — a real playlist can contain removed/private videos
+    /// that still show up as flat entries with partial data.
+    static func parsePlaylistInfo(_ output: String) -> (title: String?, entries: [PlaylistEntry])? {
+        guard let start = output.firstIndex(of: "{"), let end = output.lastIndex(of: "}"), start < end else {
+            return nil
+        }
+        guard let data = String(output[start...end]).data(using: .utf8),
+              let info = try? JSONDecoder().decode(YTDLPFlatPlaylistInfo.self, from: data)
+        else {
+            return nil
+        }
+        let entries = (info.entries ?? []).compactMap { entry -> PlaylistEntry? in
+            guard let id = entry.id else { return nil }
+            return PlaylistEntry(
+                id: id,
+                url: "https://www.youtube.com/watch?v=\(id)",
+                title: entry.title ?? "Untitled",
+                durationSeconds: entry.duration
+            )
+        }
+        return (info.title, entries)
+    }
+
     // MARK: - Downloading
 
     private static let outputMarker = "GRAB_OUTPUT_FILE:"
@@ -153,7 +218,20 @@ enum YTDLPService {
             // machine-readable pipe at that point). --progress forces the
             // progress bar back on without affecting the --print output or
             // anything about how the download/merge itself runs.
-            "--progress"
+            "--progress",
+            // fetchFormats already passes --no-playlist for the format
+            // fetch, but this download step never did — verified for real
+            // that a video+list URL without it silently downloads the
+            // *entire* playlist here (yt-dlp treats the presence of a
+            // `list=` param as "download the playlist" by default,
+            // regardless of what the format-fetch step decided). Every
+            // single-video call site (Advanced's per-format selector,
+            // Basic's plan, and playlist queue jobs, which always build a
+            // clean `watch?v=<id>` URL with no list param anyway) wants
+            // exactly one video here — a no-op for a plain video URL,
+            // verified via --simulate against a real playlist URL both
+            // with and without this flag.
+            "--no-playlist"
         ]
 
         if let cookieValue = cookiesFromBrowser.commandLineValue {
@@ -340,4 +418,19 @@ private struct YTDLPFormatInfo: Decodable {
         case formatNote = "format_note"
         case formatProtocol = "protocol"
     }
+}
+
+/// Top-level shape of `yt-dlp --flat-playlist -J`'s output — verified for
+/// real against a live 20-item YouTube playlist. Only `title` and
+/// `entries` are used; everything else yt-dlp includes (thumbnails,
+/// channel info, view counts, etc.) is ignored.
+private struct YTDLPFlatPlaylistInfo: Decodable {
+    let title: String?
+    let entries: [YTDLPFlatEntry]?
+}
+
+private struct YTDLPFlatEntry: Decodable {
+    let id: String?
+    let title: String?
+    let duration: Double?
 }

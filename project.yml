@@ -43,6 +43,7 @@ targets:
         SUFeedURL: "https://raw.githubusercontent.com/Tz4i/grab/main/appcast.xml"
         SUPublicEDKey: "r9ZTX9SsJmwHkuDDusEVcz9zLD7hfVdKHehSdG1JBBc="
         SUEnableAutomaticChecks: true
+        SUScheduledCheckInterval: 3600
     entitlements:
       path: Grab/Resources/Grab.entitlements
       properties:

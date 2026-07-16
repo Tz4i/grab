@@ -54,6 +54,23 @@ struct ContentView: View {
     @AppStorage("sleepInterval") private var sleepInterval = false
     @AppStorage("cookiesFromBrowser") private var cookiesFromBrowser: CookieBrowser = .none
 
+    /// The "this link has both a video and a playlist" disambiguation
+    /// prompt's default — see YouTubeURLKind.classify and
+    /// handleURLFieldSubmit below. Defaults to always asking.
+    @AppStorage("playlistPromptDefault") private var playlistPromptDefault: PlaylistPromptDefault = .alwaysAsk
+    /// The video-quality ceiling pre-filled in the playlist selection
+    /// sheet's policy picker — editable per batch there, same relationship
+    /// as `basicProResTier`'s persisted-default-but-editable-per-sheet
+    /// pattern above.
+    @AppStorage("defaultPlaylistFormatPolicy") private var defaultPlaylistFormatPolicy: PlaylistFormatPolicy = .bestAvailable
+
+    @State private var showPlaylistPrompt = false
+    /// Snapshotted when the gate fires, not re-read from `viewModel.
+    /// urlString` inside the dialog's button actions — the field could
+    /// technically change between the prompt appearing and the user's tap.
+    @State private var pendingPlaylistURL: String?
+    @State private var showPlaylistSelectionSheet = false
+
     @State private var sortOrder: [KeyPathComparator<VideoFormat>] = [KeyPathComparator(\.resolutionPixels, order: .reverse)]
 
     private var outputDirectoryURL: URL { URL(fileURLWithPath: outputDirectoryPath) }
@@ -155,13 +172,26 @@ struct ContentView: View {
     /// of them.
     private var basicNeedsExpandedHeight: Bool {
         viewModel.isBusy || viewModel.lastOutputURL != nil || viewModel.lastError != nil || logExpanded
+            || !viewModel.jobs.isEmpty
     }
 
     private func defaultWindowHeight(for mode: AppMode, window: NSWindow) -> CGFloat {
         switch mode {
         case .advanced:
-            return 1420
+            // Bumped from 1420 to 1480 when the queue section was added —
+            // re-measured with the same GeometryReader-on-versionFooter
+            // technique (10 mock jobs, formats populated): the true
+            // minimum only grew to ~1410 (the Formats Table's own
+            // flexible growth absorbs most added space regardless of
+            // what's below it — the queue section barely moved the
+            // number), but 1420 only left ~10px of margin, too tight for
+            // real content (longer titles, different font metrics) to be
+            // safe. 1480 restores a real buffer.
+            return 1480
         case .basic:
+            // Re-measured the same way with a 10-job queue: only ~621
+            // needed, comfortably inside the existing 780 — no change
+            // needed here.
             return basicNeedsExpandedHeight ? 780 : window.minSize.height
         }
     }
@@ -201,6 +231,7 @@ struct ContentView: View {
                 outputFolderSection
             }
             statusSection
+            queueSection
             versionFooter
         }
         .padding(14)
@@ -254,6 +285,14 @@ struct ContentView: View {
         .onChange(of: logExpanded) { _, _ in
             applyWindowHeight(for: appMode, animate: true)
         }
+        // The queue section only appears once `viewModel.jobs` is
+        // non-empty — same "content appeared, window didn't know" gap as
+        // the others above. `applyWindowHeight` no-ops once already at
+        // the target height, so triggering this on every job mutation
+        // (including per-tick progress updates) is cheap, not wasteful.
+        .onChange(of: viewModel.jobs) { _, _ in
+            applyWindowHeight(for: appMode, animate: true)
+        }
         .toolbar { toolbarContent }
         .sheet(isPresented: $showBasicResolutionSheet) {
             BasicResolutionSheet(
@@ -294,6 +333,62 @@ struct ContentView: View {
                     )
                 },
                 onCancel: { showBasicResolutionSheet = false }
+            )
+        }
+        // Fires only for a URL with both a video id and a `list=` param —
+        // a pure playlist URL skips this and goes straight to the
+        // selection sheet below; a plain video URL never reaches here at
+        // all. `pendingPlaylistURL` was snapshotted by the gate function
+        // rather than re-read live, since the field could technically
+        // change between the prompt appearing and the user's tap.
+        .confirmationDialog(
+            "This link includes a playlist",
+            isPresented: $showPlaylistPrompt
+        ) {
+            Button("Just This Video") {
+                if let url = pendingPlaylistURL {
+                    viewModel.urlString = url
+                    proceedAsSingleVideo()
+                }
+            }
+            Button("The Whole Playlist") {
+                if let url = pendingPlaylistURL {
+                    startPlaylistFlow(url: url)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This YouTube link points to both a specific video and a playlist. What would you like to download?")
+        }
+        .sheet(isPresented: $showPlaylistSelectionSheet) {
+            PlaylistSelectionSheet(
+                playlistTitle: viewModel.playlistEnumeration?.title,
+                entries: viewModel.playlistEnumeration?.entries ?? [],
+                isBasicMode: appMode == .basic,
+                formatPolicy: $defaultPlaylistFormatPolicy,
+                useProRes: $basicUseProRes,
+                proResTier: $basicProResTier,
+                deleteSourceAfterConversion: $basicDeleteSourceAfterConversion,
+                onAddToQueue: { selected in
+                    showPlaylistSelectionSheet = false
+                    let settings = AppViewModel.QueueJobSettings(
+                        outputDir: outputDirectoryURL,
+                        isBasicMode: appMode == .basic,
+                        conversionMode: conversionMode,
+                        h264Quality: h264Quality,
+                        proResTier: appMode == .basic ? basicProResTier : proResTier,
+                        useProResForBasicMode: basicUseProRes,
+                        downscale4K: downscale4K,
+                        deleteSourceAfterConversion: appMode == .basic ? basicDeleteSourceAfterConversion : deleteSourceAfterConversion,
+                        useHardwareAcceleration: useHardwareAcceleration,
+                        preferMP4: preferMP4,
+                        cookiesFromBrowser: cookiesFromBrowser,
+                        sleepInterval: sleepInterval,
+                        formatPolicy: defaultPlaylistFormatPolicy
+                    )
+                    viewModel.enqueue(entries: selected, settings: settings)
+                },
+                onCancel: { showPlaylistSelectionSheet = false }
             )
         }
         .task {
@@ -409,7 +504,7 @@ struct ContentView: View {
         if appMode == .advanced {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    viewModel.fetchFormats(cookiesFromBrowser: cookiesFromBrowser)
+                    handleURLFieldSubmit()
                 } label: {
                     Label("Fetch Formats", systemImage: "list.bullet.rectangle.portrait")
                 }
@@ -429,7 +524,13 @@ struct ContentView: View {
         }
 
         ToolbarItem(placement: .primaryAction) {
-            if viewModel.isBusy {
+            // Scoped to the single-video fetch/download flags specifically
+            // (not the broader `isBusy`, which now also covers the queue
+            // and playlist enumeration) — the queue section has its own
+            // per-row "cancel current job" control, since this button
+            // calls `viewModel.cancel()`, which only ever touches the
+            // single-video `runner`, not `queueRunner`.
+            if viewModel.isFetchingFormats || viewModel.isRunning {
                 Button(role: .destructive) {
                     viewModel.cancel()
                 } label: {
@@ -462,7 +563,7 @@ struct ContentView: View {
                 .help("Download the selected formats")
             } else {
                 Button {
-                    startBasicFlow()
+                    handleURLFieldSubmit()
                 } label: {
                     Label("Download", systemImage: "arrow.down.circle.fill")
                 }
@@ -879,7 +980,13 @@ struct ContentView: View {
 
     private var statusSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if viewModel.isBusy {
+            // Scoped to the single-video flags specifically, not the
+            // broader `isBusy` (which also covers the queue/playlist
+            // enumeration now) — otherwise this would show a stale/blank
+            // progress bar (driven by `progressLabel`/`progressFraction`,
+            // which the queue never touches) while a queue is running.
+            // The queue section below has its own per-job progress.
+            if viewModel.isFetchingFormats || viewModel.isRunning {
                 progressBarView
             } else {
                 if let error = viewModel.lastError {
@@ -931,6 +1038,58 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Playlist queue
+
+    /// Shown in both modes whenever there's at least one job — a bounded
+    /// `.frame(minHeight:maxHeight:)` on the list, same established
+    /// pattern as the Formats Table (`.frame(minHeight: 200, maxHeight:
+    /// 520)`) and the log panel (`.frame(minHeight: 160, maxHeight: 320)`)
+    /// above: an unbounded-height list here would blow out window
+    /// auto-sizing, a bug class this file has hit and fixed twice already
+    /// (see CLAUDE.md's "Window sizing" and "Basic-mode window clipping"
+    /// sections).
+    @ViewBuilder
+    private var queueSection: some View {
+        if !viewModel.jobs.isEmpty {
+            SectionCard(title: "Queue", systemImage: "list.bullet.rectangle") {
+                HStack {
+                    Text("\(viewModel.jobs.count) job\(viewModel.jobs.count == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if viewModel.jobs.contains(where: { $0.status == .completed }) {
+                        Button("Clear Completed") { viewModel.clearCompletedJobs() }
+                            .controlSize(.small)
+                    }
+                }
+
+                List {
+                    ForEach(viewModel.jobs) { job in
+                        JobRow(
+                            job: job,
+                            onRemove: { viewModel.removeJob(id: job.id) },
+                            onRetry: { viewModel.retryJob(id: job.id) },
+                            onCancel: { viewModel.cancelCurrentQueueJob() },
+                            onReveal: {
+                                if let url = job.outputURL {
+                                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                                }
+                            }
+                        )
+                        // Reordering the actively-processing job mid-flight
+                        // could desync the queue engine's expectations —
+                        // everything else is freely reorderable.
+                        .moveDisabled(job.status == .downloading || job.status == .converting)
+                    }
+                    .onMove(perform: viewModel.moveJobs)
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 120, maxHeight: 260)
+            }
+        }
+    }
+
     // MARK: - Version footer
 
     private var versionFooter: some View {
@@ -959,7 +1118,42 @@ struct ContentView: View {
         }
     }
 
+    /// The single gate every "start a fetch" action goes through (the URL
+    /// field's Return key, the paste button, and both toolbar buttons —
+    /// Advanced's "Fetch Formats" and Basic's "Download"): classifies the
+    /// URL first, and only falls through to the exact pre-existing
+    /// single-video behavior for `.singleVideo`/`.other` (and
+    /// `.videoWithPlaylist` when the user's default is "just the video").
+    /// A pure playlist URL skips straight to the selection sheet; an
+    /// ambiguous video-with-playlist URL prompts, unless the user has set
+    /// a different default in Settings. Preserves the exact pre-existing
+    /// split between Advanced (fire-and-forget fetch) and Basic (awaited,
+    /// then opens the resolution sheet) for the non-playlist cases — see
+    /// `proceedAsSingleVideo()`.
     private func handleURLFieldSubmit() {
+        let trimmed = viewModel.urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch YouTubeURLKind.classify(trimmed) {
+        case .singleVideo, .other:
+            proceedAsSingleVideo()
+        case .playlistOnly:
+            startPlaylistFlow(url: trimmed)
+        case .videoWithPlaylist:
+            switch playlistPromptDefault {
+            case .alwaysAsk:
+                pendingPlaylistURL = trimmed
+                showPlaylistPrompt = true
+            case .justVideo:
+                proceedAsSingleVideo()
+            case .alwaysPlaylist:
+                startPlaylistFlow(url: trimmed)
+            }
+        }
+    }
+
+    /// Exactly the pre-existing single-video behavior, unchanged: Advanced
+    /// fires off `fetchFormats` without awaiting it; Basic awaits the
+    /// silent fetch, then opens the resolution sheet on success.
+    private func proceedAsSingleVideo() {
         if appMode == .advanced {
             viewModel.fetchFormats(cookiesFromBrowser: cookiesFromBrowser)
         } else {
@@ -971,12 +1165,13 @@ struct ContentView: View {
     /// like a URL (parses with an http/https scheme — not just "any
     /// nonempty string", so pasting plain text doesn't silently kick off
     /// a doomed fetch), fills the URL field and immediately triggers the
-    /// same fetch `handleURLFieldSubmit()` would — copy a link in the
-    /// browser, one click here, formats show up with no manual paste step
-    /// in between. An invalid/empty clipboard leaves the field untouched
-    /// and surfaces the same `lastError` text the rest of this file
-    /// already uses for fetch/download failures, rather than inventing a
-    /// separate toast/banner mechanism for one edge case.
+    /// same gate `handleURLFieldSubmit()` would — copy a link in the
+    /// browser, one click here, formats (or the playlist prompt/sheet)
+    /// show up with no manual paste step in between. An invalid/empty
+    /// clipboard leaves the field untouched and surfaces the same
+    /// `lastError` text the rest of this file already uses for
+    /// fetch/download failures, rather than inventing a separate
+    /// toast/banner mechanism for one edge case.
     private func pasteFromClipboardAndFetch() {
         let clipboardText = NSPasteboard.general.string(forType: .string)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -1002,6 +1197,23 @@ struct ContentView: View {
             let success = await viewModel.fetchFormatsAwaiting(cookiesFromBrowser: cookiesFromBrowser)
             if success {
                 showBasicResolutionSheet = true
+            }
+        }
+    }
+
+    /// Awaits the flat-playlist enumeration, then opens the selection
+    /// sheet on success. A failure surfaces via `viewModel.
+    /// playlistEnumerationError` — shown as a plain `lastError`-style
+    /// message rather than a second alert type, matching this file's
+    /// existing preference for reusing one error-surfacing mechanism.
+    private func startPlaylistFlow(url: String) {
+        viewModel.urlString = url
+        Task {
+            let success = await viewModel.enumeratePlaylist(url: url, cookiesFromBrowser: cookiesFromBrowser)
+            if success {
+                showPlaylistSelectionSheet = true
+            } else {
+                viewModel.lastError = viewModel.playlistEnumerationError
             }
         }
     }
@@ -1094,58 +1306,11 @@ private struct BasicResolutionSheet: View {
 
                 Divider()
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Toggle("Editing quality (ProRes)", isOn: $useProRes)
-                    Text("Much larger files, but scrubs smoothly in editing software.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if useProRes {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(ProResTier.allCases) { tier in
-                                Button {
-                                    proResTier = tier
-                                } label: {
-                                    HStack(alignment: .top) {
-                                        Image(systemName: proResTier == tier ? "largecircle.fill.circle" : "circle")
-                                            .foregroundStyle(proResTier == tier ? Color.accentColor : Color.secondary)
-                                        VStack(alignment: .leading, spacing: 1) {
-                                            HStack(spacing: 6) {
-                                                Text(tier.label)
-                                                if tier == .basicModeDefault {
-                                                    Text("Recommended")
-                                                        .font(.caption2.weight(.semibold))
-                                                        .foregroundStyle(Color.accentColor)
-                                                        .padding(.horizontal, 5)
-                                                        .padding(.vertical, 1)
-                                                        .background(Color.accentColor.opacity(0.15), in: Capsule())
-                                                }
-                                            }
-                                            Text(tier.basicModeTagline)
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                        Spacer()
-                                    }
-                                    .contentShape(Rectangle())
-                                    .padding(.vertical, 3)
-                                    .padding(.horizontal, 6)
-                                    .background(
-                                        proResTier == tier ? Color.accentColor.opacity(0.1) : Color.clear,
-                                        in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(.leading, 4)
-
-                        Toggle("Delete source file after conversion", isOn: $deleteSourceAfterConversion)
-                        Text("The downloaded file is kept until the ProRes conversion finishes successfully.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                ProResOptionsSection(
+                    useProRes: $useProRes,
+                    proResTier: $proResTier,
+                    deleteSourceAfterConversion: $deleteSourceAfterConversion
+                )
             }
 
             HStack {
@@ -1163,6 +1328,319 @@ private struct BasicResolutionSheet: View {
     }
 }
 
+/// Basic mode's "Editing quality (ProRes)" toggle + tier picker +
+/// delete-source toggle — factored out of `BasicResolutionSheet` so the
+/// playlist selection sheet can reuse it verbatim (per the spec's "Basic:
+/// simple resolution + conversion choice" split — Basic mode's playlist
+/// flow gets the same familiar conversion picker as its single-video
+/// flow, not a separate new one).
+private struct ProResOptionsSection: View {
+    @Binding var useProRes: Bool
+    @Binding var proResTier: ProResTier
+    @Binding var deleteSourceAfterConversion: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Editing quality (ProRes)", isOn: $useProRes)
+            Text("Much larger files, but scrubs smoothly in editing software.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if useProRes {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(ProResTier.allCases) { tier in
+                        Button {
+                            proResTier = tier
+                        } label: {
+                            HStack(alignment: .top) {
+                                Image(systemName: proResTier == tier ? "largecircle.fill.circle" : "circle")
+                                    .foregroundStyle(proResTier == tier ? Color.accentColor : Color.secondary)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    HStack(spacing: 6) {
+                                        Text(tier.label)
+                                        if tier == .basicModeDefault {
+                                            Text("Recommended")
+                                                .font(.caption2.weight(.semibold))
+                                                .foregroundStyle(Color.accentColor)
+                                                .padding(.horizontal, 5)
+                                                .padding(.vertical, 1)
+                                                .background(Color.accentColor.opacity(0.15), in: Capsule())
+                                        }
+                                    }
+                                    Text(tier.basicModeTagline)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                            .padding(.vertical, 3)
+                            .padding(.horizontal, 6)
+                            .background(
+                                proResTier == tier ? Color.accentColor.opacity(0.1) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.leading, 4)
+
+                Toggle("Delete source file after conversion", isOn: $deleteSourceAfterConversion)
+                Text("The downloaded file is kept until the ProRes conversion finishes successfully.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+// MARK: - Queue job row
+
+/// One row in the queue list — status icon, title, a compact status/
+/// progress line, and status-appropriate actions (cancel while active,
+/// retry+remove when failed, reveal+remove when completed, remove
+/// otherwise).
+private struct JobRow: View {
+    let job: Job
+    let onRemove: () -> Void
+    let onRetry: () -> Void
+    let onCancel: () -> Void
+    let onReveal: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            statusIcon
+            VStack(alignment: .leading, spacing: 2) {
+                Text(job.title)
+                    .lineLimit(1)
+                statusDetail
+            }
+            Spacer()
+            actions
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder private var statusIcon: some View {
+        switch job.status {
+        case .queued:
+            Image(systemName: "clock").foregroundStyle(.secondary)
+        case .downloading, .converting:
+            ProgressView().controlSize(.small)
+        case .completed:
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+        case .cancelled:
+            Image(systemName: "slash.circle").foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var statusDetail: some View {
+        switch job.status {
+        case .queued:
+            Text("Queued")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .downloading, .converting:
+            HStack(spacing: 6) {
+                Text(job.progressLabel.isEmpty ? (job.status == .converting ? "Converting…" : "Downloading…") : job.progressLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if let fraction = job.progressFraction {
+                    Text("\(Int((fraction * 100).rounded()))%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        case .completed:
+            Text("Completed")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .failed:
+            Text(job.errorMessage ?? "Failed")
+                .font(.caption)
+                .foregroundStyle(.red)
+                .lineLimit(1)
+        case .cancelled:
+            Text("Cancelled")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var actions: some View {
+        HStack(spacing: 10) {
+            switch job.status {
+            case .downloading, .converting:
+                Button { onCancel() } label: { Image(systemName: "xmark.circle") }
+                    .help("Cancel this job")
+            case .completed:
+                Button { onReveal() } label: { Image(systemName: "folder") }
+                    .help("Reveal in Finder")
+                Button { onRemove() } label: { Image(systemName: "xmark") }
+                    .help("Remove from queue")
+            case .failed:
+                Button { onRetry() } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Retry")
+                Button { onRemove() } label: { Image(systemName: "xmark") }
+                    .help("Remove from queue")
+            case .queued, .cancelled:
+                Button { onRemove() } label: { Image(systemName: "xmark") }
+                    .help("Remove from queue")
+            }
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+    }
+}
+
+// MARK: - Playlist selection sheet
+
+/// Shown after a playlist URL is enumerated (flat, fast — see
+/// `YTDLPService.fetchPlaylistEntries`): a checklist of every entry (all
+/// selected by default), a large-playlist warning, a video-quality policy
+/// picker, and mode-specific conversion controls — Basic mode reuses its
+/// existing ProRes picker (`ProResOptionsSection`); Advanced mode shows no
+/// extra picker at all, since it reads conversion settings straight from
+/// whatever's already configured in the main Advanced UI. "Add to Queue"
+/// builds one `Job` per checked entry via `AppViewModel.enqueue`.
+private struct PlaylistSelectionSheet: View {
+    let playlistTitle: String?
+    let entries: [PlaylistEntry]
+    let isBasicMode: Bool
+    @Binding var formatPolicy: PlaylistFormatPolicy
+    @Binding var useProRes: Bool
+    @Binding var proResTier: ProResTier
+    @Binding var deleteSourceAfterConversion: Bool
+    let onAddToQueue: (_ selected: [PlaylistEntry]) -> Void
+    let onCancel: () -> Void
+
+    @State private var selectedIDs: Set<String>
+
+    /// Large-playlist threshold the spec calls out ("over ~25 items").
+    private static let largePlaylistThreshold = 25
+
+    init(
+        playlistTitle: String?,
+        entries: [PlaylistEntry],
+        isBasicMode: Bool,
+        formatPolicy: Binding<PlaylistFormatPolicy>,
+        useProRes: Binding<Bool>,
+        proResTier: Binding<ProResTier>,
+        deleteSourceAfterConversion: Binding<Bool>,
+        onAddToQueue: @escaping (_ selected: [PlaylistEntry]) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.playlistTitle = playlistTitle
+        self.entries = entries
+        self.isBasicMode = isBasicMode
+        self._formatPolicy = formatPolicy
+        self._useProRes = useProRes
+        self._proResTier = proResTier
+        self._deleteSourceAfterConversion = deleteSourceAfterConversion
+        self.onAddToQueue = onAddToQueue
+        self.onCancel = onCancel
+        self._selectedIDs = State(initialValue: Set(entries.map(\.id)))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Choose Videos")
+                    .font(.headline)
+                if let playlistTitle {
+                    Text(playlistTitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Text("\(selectedIDs.count) of \(entries.count) selected")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if entries.count > Self.largePlaylistThreshold {
+                Label(
+                    "This is a large playlist (\(entries.count) videos). Downloading all of them may take a while.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+
+            List(entries) { entry in
+                Toggle(isOn: Binding(
+                    get: { selectedIDs.contains(entry.id) },
+                    set: { isOn in
+                        if isOn { selectedIDs.insert(entry.id) } else { selectedIDs.remove(entry.id) }
+                    }
+                )) {
+                    HStack {
+                        Text(entry.title)
+                            .lineLimit(1)
+                        Spacer()
+                        Text(entry.displayDuration)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.checkbox)
+            }
+            .frame(minHeight: 200, maxHeight: 320)
+
+            HStack {
+                Button(selectedIDs.count == entries.count ? "Deselect All" : "Select All") {
+                    selectedIDs = selectedIDs.count == entries.count ? [] : Set(entries.map(\.id))
+                }
+                .controlSize(.small)
+                Spacer()
+            }
+
+            Divider()
+
+            Picker("Video quality", selection: $formatPolicy) {
+                ForEach(PlaylistFormatPolicy.allCases) { policy in
+                    Text(policy.label).tag(policy)
+                }
+            }
+            Text("Applied automatically to every video in this batch — individual formats aren't picked one by one.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if isBasicMode {
+                Divider()
+                ProResOptionsSection(
+                    useProRes: $useProRes,
+                    proResTier: $proResTier,
+                    deleteSourceAfterConversion: $deleteSourceAfterConversion
+                )
+            } else {
+                Text("Uses the conversion settings already configured in the main window.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { onCancel() }
+                Button("Add \(selectedIDs.count) to Queue") {
+                    onAddToQueue(entries.filter { selectedIDs.contains($0.id) })
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(selectedIDs.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+    }
+}
+
 // MARK: - Settings
 
 struct SettingsView: View {
@@ -1171,6 +1649,8 @@ struct SettingsView: View {
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
     @AppStorage("hasAcknowledgedDisclaimer") private var hasAcknowledgedDisclaimer = false
     @AppStorage("debugForceShowSetupScreen") private var debugForceShowSetupScreen = false
+    @AppStorage("playlistPromptDefault") private var playlistPromptDefault: PlaylistPromptDefault = .alwaysAsk
+    @AppStorage("defaultPlaylistFormatPolicy") private var defaultPlaylistFormatPolicy: PlaylistFormatPolicy = .bestAvailable
 
     @State private var isUpdatingYTDLP = false
     @State private var updateResult: String?
@@ -1198,6 +1678,27 @@ struct SettingsView: View {
             } footer: {
                 Text("Cookie extraction from your browser is the only sign-in method Grab supports — it "
                     + "never asks for your YouTube username or password. Theres also a good chance it will NOT work first try enabling full disk access if it doesnt work, Either use a VPN to switch your virtual location or just try again later")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Section {
+                Picker("When a link includes a playlist", selection: $playlistPromptDefault) {
+                    ForEach(PlaylistPromptDefault.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                Picker("Playlist video quality", selection: $defaultPlaylistFormatPolicy) {
+                    ForEach(PlaylistFormatPolicy.allCases) { policy in
+                        Text(policy.label).tag(policy)
+                    }
+                }
+            } header: {
+                Text("Playlists")
+            } footer: {
+                Text("The prompt default controls what happens when a pasted link has both a specific video "
+                    + "and a playlist. The video quality is applied automatically to every video queued from a "
+                    + "playlist — both are also editable per-batch in the selection sheet.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }

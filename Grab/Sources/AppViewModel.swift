@@ -55,20 +55,58 @@ final class AppViewModel: ObservableObject {
     @Published var diskSpaceWarning: DiskSpaceWarning?
     private var diskSpaceContinuation: CheckedContinuation<Bool, Never>?
 
-    var isBusy: Bool { isFetchingFormats || isRunning }
+    // MARK: - Playlist queue
 
-    /// Max attempts (initial try + retries) for any single auto-retry loop
-    /// below (the 403 download retry, the hardware->software conversion
-    /// fallback) — a hard backstop so a future classification bug can
-    /// never turn into an unbounded retry loop, independent of whichever
-    /// per-error-kind logic decides *whether* to retry at all.
-    private let maxAttemptsPerPhase = 2
+    /// The playlist job queue — see AppViewModel+Queue.swift for all
+    /// processing logic. A plain `@Published` array (not per-job
+    /// `ObservableObject`s); mutated via id-based lookup throughout so
+    /// concurrent remove/reorder/retry actions can't corrupt whichever job
+    /// is currently processing.
+    @Published var jobs: [Job] = []
+    @Published var isProcessingQueue = false
+    /// Distinct from `isProcessingQueue`: true only while the "which
+    /// videos do you want?" checklist sheet is awaiting the flat-playlist
+    /// enumeration, before any job exists yet.
+    @Published var isEnumeratingPlaylist = false
+    @Published var playlistEnumeration: (title: String?, entries: [PlaylistEntry])?
+    @Published var playlistEnumerationError: String?
+
+    /// A fully separate `ProcessRunner` instance from the single-video
+    /// `runner` below — matches `ProcessRunner`'s own "one instance per
+    /// operation, never a shared singleton" convention, so the queue's
+    /// Cancel-current-job action can never affect (or be affected by) a
+    /// concurrent single-video fetch/download. In practice the two never
+    /// truly run at once (`isBusy` gates on both), but keeping them
+    /// separate avoids any cross-cancellation surprise regardless.
+    let queueRunner = ProcessRunner()
+    var currentJobCancelRequested = false
+
+    /// Full lockout while a queue runs — confirmed as the desired v1
+    /// behavior (not a side effect of a one-line change): a queue can run
+    /// for a while, and this keeps exactly one thing happening at a time
+    /// in the app, matching the queue's own "never parallel downloads or
+    /// encodes" requirement rather than introducing a second concurrent
+    /// surface to reason about.
+    var isBusy: Bool { isFetchingFormats || isRunning || isProcessingQueue || isEnumeratingPlaylist }
 
     private let runner = ProcessRunner()
     private var logBuffer = LogBuffer()
     private var logFlushPending = false
 
-    private func appendLog(_ text: String) {
+    init() {
+        loadPersistedQueue()
+    }
+
+    /// Internal, not private: `DownloadProgressSink` conformance below
+    /// uses it directly (same-file, would work either way), but the
+    /// playlist queue's `JobSink` (a different file, AppViewModel+Queue.
+    /// swift) also feeds the currently-processing job's yt-dlp/ffmpeg
+    /// output into this same shared log — queue processing and
+    /// single-video processing are mutually exclusive (`isBusy` gates
+    /// both), so there's no interleaving risk, and it means "Show
+    /// details" stays useful while a queue is running instead of going
+    /// silent.
+    func appendLog(_ text: String) {
         logBuffer.feed(text)
         scheduleLogFlush()
     }
@@ -89,7 +127,7 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func flushLogNow() {
+    func flushLogNow() {
         logFlushPending = false
         log = logBuffer.text
     }
@@ -98,7 +136,7 @@ final class AppViewModel: ObservableObject {
     /// alert. `requiredBytes` is the pre-flight estimate; if the available
     /// space can't be determined at all, or is enough, this resolves
     /// `true` immediately with no prompt.
-    private func confirmEnoughDiskSpace(requiredBytes: Int64, at directory: URL) async -> Bool {
+    func confirmEnoughDiskSpace(requiredBytes: Int64, at directory: URL) async -> Bool {
         guard let available = DiskSpaceService.availableBytes(at: directory), requiredBytes > available else {
             return true
         }
@@ -440,6 +478,13 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// Thin wrapper around the shared `DownloadEngine` — reconstructs
+    /// exactly the same `lastError`/`actionableAlert`/`lastOutputURL`/
+    /// notification behavior the inline implementation used to have
+    /// directly, just driven by the engine's `Outcome` instead. See
+    /// `DownloadEngine.swift` for why the outcome shape preserves the
+    /// asymmetry between download-failure and conversion-failure handling
+    /// rather than collapsing to a flat error string.
     private func runDownloadAndConvert(
         url: String,
         formatSelector: String,
@@ -454,61 +499,33 @@ final class AppViewModel: ObservableObject {
         cookiesFromBrowser: CookieBrowser,
         sleepInterval: Bool
     ) async {
-        // Tries the given format selector. Used for the initial attempt and
-        // for the automatic 403 fallback retry (item 6) below — identical
-        // flags either time, only -f differs.
-        func attemptDownload(selector: String) async -> ProcessResult {
-            let args = YTDLPService.downloadArguments(
-                url: url, formatSelector: selector, outputDir: outputDir,
-                preferMP4: preferMP4, cookiesFromBrowser: cookiesFromBrowser, sleepInterval: sleepInterval
+        let outcome = await DownloadEngine.run(
+            url: url,
+            formatSelector: formatSelector,
+            outputDir: outputDir,
+            conversionMode: conversionMode,
+            proResTier: proResTier,
+            h264Quality: h264Quality,
+            downscale4K: downscale4K,
+            deleteSourceAfterConversion: deleteSourceAfterConversion,
+            useHardwareAcceleration: useHardwareAcceleration,
+            preferMP4: preferMP4,
+            cookiesFromBrowser: cookiesFromBrowser,
+            sleepInterval: sleepInterval,
+            runner: runner,
+            sink: self
+        )
+
+        switch outcome {
+        case .success(let outputURL, let modeName):
+            lastOutputURL = outputURL
+            NotificationService.postCompletion(
+                title: modeName.map { "\($0) Conversion Complete" } ?? "Download Complete",
+                body: "\(outputURL.lastPathComponent) is ready.",
+                revealURL: outputURL
             )
-            progressLabel = "Downloading…"
-            progressFraction = nil
-            progressETA = nil
-            appendLog("\n$ yt-dlp \(args.joined(separator: " "))\n")
-            return await runner.run(
-                path: Tool.ytdlp,
-                arguments: args,
-                qos: .userInitiated,
-                onOutput: streamHandler(onChunk: { [weak self] chunk in
-                    guard let progress = YTDLPService.parseDownloadProgress(from: chunk) else { return }
-                    self?.progressFraction = progress.fraction
-                    self?.progressETA = progress.eta
-                })
-            )
-        }
-
-        // Bounded retry loop (see maxAttemptsPerPhase): a genuinely transient
-        // failure (HTTP 403) gets one automatic retry with a simpler format
-        // selector. Anything SystemFailureKind recognizes as fatal (disk
-        // full, permission denied, missing binary) never retries at all —
-        // retrying those can only ever fail again, and previously nothing
-        // stopped a caller from wiring up an unbounded loop around this.
-        var currentSelector = formatSelector
-        var downloadAttempts = 0
-        var downloadResult: ProcessResult
-        repeat {
-            downloadAttempts += 1
-            downloadResult = await attemptDownload(selector: currentSelector)
-            guard downloadResult.exitCode != 0 else { break }
-
-            let systemFailure = SystemFailureKind.classify(downloadResult.output)
-            guard !systemFailure.isFatal,
-                  downloadAttempts < maxAttemptsPerPhase,
-                  currentSelector != YTDLPService.fallbackFormatSelector,
-                  YTDLPService.classifyFailure(downloadResult.output) == .forbidden403
-            else { break }
-
-            appendLog(
-                "\nDownload failed with HTTP 403 — automatically retrying once with a simpler format "
-                + "selection (\(YTDLPService.fallbackFormatSelector))…\n"
-            )
-            currentSelector = YTDLPService.fallbackFormatSelector
-        } while true
-
-        guard downloadResult.exitCode == 0 else {
-            appendLog("\nyt-dlp exited with code \(downloadResult.exitCode).\n")
-            switch SystemFailureKind.classify(downloadResult.output) {
+        case .downloadFailed(let rawOutput, let systemFailure):
+            switch systemFailure {
             case .diskFull:
                 lastError = "Not enough free space to complete the download."
                 actionableAlert = ActionableAlert(
@@ -528,201 +545,14 @@ final class AppViewModel: ObservableObject {
                 )
             case .missingBinary, .invalidInput, .none:
                 lastError = "Download failed (see log)."
-                presentActionableAlert(for: downloadResult.output)
+                presentActionableAlert(for: rawOutput)
             }
-            return
-        }
-
-        guard let outputPath = YTDLPService.extractOutputFile(from: downloadResult.output) else {
-            appendLog("\nDownload finished but the output file path could not be determined.\n")
+        case .outputPathUndetermined:
             lastError = "Could not determine downloaded file path."
-            return
-        }
-        appendLog("\nDownloaded: \(outputPath)\n")
-        progressFraction = nil
-        progressETA = nil
-
-        let inputURL = URL(fileURLWithPath: outputPath)
-
-        // Always inspect the source's color metadata (read-only, cheap) so
-        // the "detected source" indicator has something to show even when
-        // ProRes conversion itself is off this run.
-        progressLabel = "Inspecting color metadata…"
-        appendLog("\n$ ffprobe -show_entries stream=color_transfer,color_primaries \"\(inputURL.lastPathComponent)\"\n")
-
-        let colorResult = await FFmpegService.probeColorInfo(fileURL: inputURL, runner: runner)
-        let colorInfo: ColorInfo
-        switch colorResult {
-        case .success(let info):
-            colorInfo = info
-        case .failure(let error):
-            appendLog("\nffprobe failed: \(error.message)\nDefaulting to SDR path.\n")
-            colorInfo = ColorInfo(transfer: "unknown", primaries: "unknown")
-        }
-        appendLog("\nColor metadata: \(colorInfo.summary)\n")
-        detectedColorInfo = colorInfo
-
-        guard conversionMode != .none else {
-            lastOutputURL = inputURL
-            NotificationService.postCompletion(
-                title: "Download Complete",
-                body: "\(inputURL.lastPathComponent) is ready.",
-                revealURL: inputURL
-            )
-            return
-        }
-
-        let isH264 = conversionMode == .h264
-        let modeName = isH264 ? "H.264" : "ProRes"
-        let outputURL = isH264
-            ? FFmpegService.h264OutputURL(for: inputURL)
-            : FFmpegService.proResOutputURL(for: inputURL)
-        let usedHDRPath = colorInfo.isHDR
-
-        appendLog(usedHDRPath
-            ? "Detected HDR (PQ/BT.2020) — using HDR tone-map filter chain.\n"
-            : "Detected SDR (bt709 / unspecified) — using direct SDR path.\n")
-        if usedHDRPath && useHardwareAcceleration {
-            appendLog("Note: the HDR tone-map filter chain (zscale/tonemap) runs on the CPU regardless of "
-                + "hardware acceleration — only the final \(modeName) encode step uses the hardware encoder.\n")
-        }
-
-        // Best-effort duration probe purely for the progress bar; a failure
-        // here just means an indeterminate progress bar, nothing else. Uses
-        // the same shared `runner` as everything else so Cancel still works
-        // correctly if it lands while this quick probe is in flight.
-        var sourceDuration: TimeInterval?
-        if case .success(let duration) = await FFmpegService.probeDuration(fileURL: inputURL, runner: runner) {
-            sourceDuration = duration
-        }
-
-        // Pre-flight disk-space check: estimate the output size from
-        // duration/resolution/fps/codec-tier and compare against free space
-        // on the output volume, warning (with a Continue/Cancel choice)
-        // before spending minutes encoding something that can't fit.
-        // Best-effort like the duration probe above — if either probe
-        // fails, there's nothing to estimate against, so this just skips
-        // silently rather than blocking the run.
-        var estimatedRequiredBytes: Int64?
-        if let duration = sourceDuration,
-           case .success(let dimensions) = await FFmpegService.probeVideoDimensions(fileURL: inputURL, runner: runner) {
-            let requiredBytes = FFmpegService.estimateOutputBytes(
-                durationSeconds: duration, conversionMode: conversionMode, proResTier: proResTier,
-                h264Quality: h264Quality, width: dimensions.width, height: dimensions.height, fps: dimensions.fps
-            )
-            estimatedRequiredBytes = requiredBytes
-            let proceed = await confirmEnoughDiskSpace(requiredBytes: requiredBytes, at: outputURL.deletingLastPathComponent())
-            guard proceed else {
-                appendLog("\nConversion cancelled by user (not enough free space).\n")
-                lastError = "Conversion cancelled (not enough free space)."
-                return
-            }
-        }
-
-        // Tries the hardware encoder (prores_videotoolbox / h264_videotoolbox)
-        // or its software counterpart (prores_ks / libx264) depending on
-        // `useHardware`. Filter chain is identical either way for both
-        // modes; only the rate-control flags differ between H.264's
-        // hardware (bitrate) and software (CRF) paths -- see
-        // FFmpegService.h264ConversionArguments.
-        func attemptConversion(useHardware: Bool) async -> ProcessResult {
-            let args: [String]
-            let encoderName: String
-            if isH264 {
-                (args, _) = FFmpegService.h264ConversionArguments(
-                    inputURL: inputURL, outputURL: outputURL, colorInfo: colorInfo,
-                    quality: h264Quality, downscale4K: downscale4K, useHardwareEncoder: useHardware
-                )
-                encoderName = useHardware ? FFmpegService.h264HardwareEncoder : FFmpegService.h264SoftwareEncoder
-            } else {
-                (args, _) = FFmpegService.conversionArguments(
-                    inputURL: inputURL, outputURL: outputURL, colorInfo: colorInfo,
-                    tier: proResTier, downscale4K: downscale4K, useHardwareEncoder: useHardware
-                )
-                encoderName = useHardware ? FFmpegService.hardwareEncoder : FFmpegService.softwareEncoder
-            }
-
-            progressFraction = nil
-            progressETA = nil
-            progressLabel = usedHDRPath
-                ? "Converting to \(modeName) (\(encoderName), HDR tone-map)…"
-                : "Converting to \(modeName) (\(encoderName))…"
-            appendLog("\n$ ffmpeg \(args.joined(separator: " "))\n")
-
-            let conversionStart = Date()
-            return await runner.run(
-                path: Tool.ffmpeg,
-                arguments: args,
-                qos: .userInitiated,
-                onOutput: streamHandler(onChunk: { [weak self] chunk in
-                    guard let self, let duration = sourceDuration,
-                          let currentTime = FFmpegService.parseTimeSeconds(from: chunk) else { return }
-                    let fraction = min(max(currentTime / duration, 0), 1)
-                    self.progressFraction = fraction
-
-                    let remaining = max(duration - currentTime, 0)
-                    if let speed = FFmpegService.parseSpeed(from: chunk), speed > 0 {
-                        self.progressETA = FFmpegService.formatDuration(remaining / speed)
-                    } else if fraction > 0 {
-                        let elapsed = Date().timeIntervalSince(conversionStart)
-                        self.progressETA = FFmpegService.formatDuration(elapsed / fraction * (1 - fraction))
-                    }
-                })
-            )
-        }
-
-        // Bounded to maxAttemptsPerPhase (hardware attempt + at most one
-        // software retry) same as the download loop above. The fallback
-        // only fires when the hardware failure isn't one of
-        // SystemFailureKind's fatal categories — a disk-full or
-        // permission-denied failure will fail identically on the software
-        // encoder, so retrying just burns another full encode's worth of
-        // CPU/IO for a result that was never going to succeed.
-        var convertResult = await attemptConversion(useHardware: useHardwareAcceleration)
-        var conversionAttempts = 1
-
-        if useHardwareAcceleration && convertResult.exitCode != 0 && conversionAttempts < maxAttemptsPerPhase {
-            let systemFailure = SystemFailureKind.classify(convertResult.output)
-            if systemFailure.isFatal {
-                appendLog("\nHardware encoder failed with a non-retryable error — not falling back to software encoding (see error below).\n")
-            } else {
-                let hardwareEncoder = isH264 ? FFmpegService.h264HardwareEncoder : FFmpegService.hardwareEncoder
-                let softwareEncoder = isH264 ? FFmpegService.h264SoftwareEncoder : FFmpegService.softwareEncoder
-                appendLog(
-                    "\nHardware encoder (\(hardwareEncoder)) failed (exit code \(convertResult.exitCode))"
-                    + " — falling back to software encoder (\(softwareEncoder)).\n"
-                )
-                conversionAttempts += 1
-                convertResult = await attemptConversion(useHardware: false)
-            }
-        }
-
-        if convertResult.exitCode == 0 {
-            appendLog("\n\(modeName) conversion complete: \(outputURL.path)\n")
-
-            if !isH264, case .success(let tag) = await FFmpegService.probeCodecTag(fileURL: outputURL, runner: runner) {
-                appendLog("Output codec tag: \(tag) (expected apcn for 422, apch for 422 HQ)\n")
-            }
-
-            if deleteSourceAfterConversion {
-                do {
-                    try FileManager.default.removeItem(at: inputURL)
-                    appendLog("Deleted source file: \(inputURL.path)\n")
-                } catch {
-                    appendLog("Could not delete source file: \(error.localizedDescription)\n")
-                }
-            }
-
-            lastOutputURL = outputURL
-            NotificationService.postCompletion(
-                title: "\(modeName) Conversion Complete",
-                body: "\(outputURL.lastPathComponent) is ready.",
-                revealURL: outputURL
-            )
-        } else {
-            appendLog("\nffmpeg exited with code \(convertResult.exitCode).\n")
-            let outputDirectory = outputURL.deletingLastPathComponent()
-            switch SystemFailureKind.classify(convertResult.output) {
+        case .diskSpaceDeclined:
+            lastError = "Conversion cancelled (not enough free space)."
+        case .conversionFailed(_, let systemFailure, let outputDirectory, let estimatedRequiredBytes, let modeName):
+            switch systemFailure {
             case .diskFull:
                 lastError = "Not enough free space (see log)."
                 actionableAlert = ActionableAlert(
@@ -759,4 +589,37 @@ final class AppViewModel: ObservableObject {
         runner.cancel()
         appendLog("\n— Cancelled by user —\n")
     }
+}
+
+/// The single-video path's `DownloadEngine` reporting target — delegates
+/// to the exact same private/internal methods and `@Published` properties
+/// `runDownloadAndConvert` used to write to directly, so this extraction
+/// changes nothing about single-video observable behavior. `setPhase` is
+/// a no-op here: the single-video UI already conveys "downloading" vs
+/// "converting" via `progressLabel`'s text, it doesn't need a separate
+/// phase concept the way the queue's per-job `status` does.
+extension AppViewModel: DownloadProgressSink {
+    func setPhase(_ phase: DownloadEngine.Phase) {}
+
+    func setProgressLabel(_ label: String) {
+        progressLabel = label
+    }
+
+    func setProgressFraction(_ fraction: Double?) {
+        progressFraction = fraction
+    }
+
+    func setProgressETA(_ eta: String?) {
+        progressETA = eta
+    }
+
+    func setColorInfo(_ info: ColorInfo?) {
+        detectedColorInfo = info
+    }
+
+    // confirmEnoughDiskSpace(requiredBytes:at:) is satisfied directly by
+    // the existing method of the same signature above (had to be
+    // `internal`, not `private`, to witness this protocol requirement —
+    // Swift requires a witness to be at least as visible as the protocol
+    // itself, same-file conformance doesn't relax that).
 }
