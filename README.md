@@ -2,12 +2,25 @@
 
 A native macOS app that wraps [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) and
 [`ffmpeg`](https://ffmpeg.org) to download YouTube video and, optionally,
-convert it to ProRes (with automatic HDR tone-mapping) for use in After
-Effects.
+convert it to ProRes (with automatic HDR tone-mapping, for After Effects and
+other editing software) or a smaller H.264 MP4.
 
-- Pick any available format/resolution, or one click for best quality
-- Optional ProRes conversion (Proxy/LT/Standard/HQ/4444), with hardware
+<p align="center">
+  <img src="screenshots/basic-populated.png" width="600" alt="Grab in Basic mode, showing a fetched video and the resolution picker">
+</p>
+
+- **Basic mode** (the default): paste a link, pick a resolution, done — Grab
+  always picks a format that actually opens in QuickTime, converting to
+  H.264 behind the scenes if it has to
+- **Advanced mode**: the full format table, per-track video/audio selection,
+  and every conversion option, for when you want manual control
+- **Playlists**: paste a playlist (or a video link with a playlist attached)
+  to get a checklist of videos and a sequential download queue, with
+  progress/retry/cancel per item
+- Optional ProRes conversion (Proxy/LT/422/HQ/4444) or H.264, with hardware
   acceleration when available and automatic HDR → SDR tone-mapping
+- Shows the fetched video's title/thumbnail/duration/channel so you can
+  confirm it found the right video before downloading
 - Progress bar with ETA for both the download and conversion phases
 - A completion notification with a "Reveal in Finder" action
 - Cookie-based auth (via your browser's cookie store) for private/age-gated
@@ -68,17 +81,45 @@ downloaded copy of the app — see the Gatekeeper note under
 
 ## Usage
 
-1. Paste a YouTube URL and click **Fetch Formats**.
-2. Pick a video/audio format from the table (or click **Best Quality** for
-   one-click max resolution), then **Download**.
-3. Optionally enable ProRes conversion and a tier in the Output section
-   before downloading — Grab probes the source for HDR and tone-maps to SDR
-   automatically if needed.
+### Basic mode (default)
+
+1. Paste a YouTube URL and click **Download** (or hit Return).
+2. Pick a resolution — only ones that actually exist for that video are
+   shown, plus an always-available "Best available." Optionally turn on
+   "Editing quality (ProRes)" and pick a tier.
+3. Click **Go**. Grab always produces a file that opens in QuickTime — if
+   the chosen quality only exists in a codec QuickTime can't play, Grab
+   converts to H.264 automatically rather than handing you an unplayable
+   file.
 4. Find your file via the "Reveal in Finder" button or notification action
    when it's done.
 
-Cookie-based auth, sleep interval, MP4 preference, and other advanced
-options are under the app's Settings (⌘,).
+<p align="center">
+  <img src="screenshots/basic-idle.png" width="600" alt="Grab in Basic mode, idle">
+</p>
+
+### Advanced mode
+
+Switch to **Advanced** in the toolbar for the full format table: pick a
+specific video/audio format (or click **Best Quality**), choose ProRes or
+H.264 conversion and a tier/quality manually, then **Download**.
+
+<p align="center">
+  <img src="screenshots/advanced-populated.png" width="600" alt="Grab in Advanced mode, showing the full format table and conversion options">
+</p>
+
+### Playlists
+
+Paste a playlist link, or a video link that also has a playlist attached —
+Grab asks (or, per your Settings default, decides automatically) whether
+you meant just that video or the whole playlist. Picking the playlist opens
+a checklist of every video (pre-checked) plus a format-quality cap for the
+whole batch; **Add to Queue** processes them one at a time, with per-item
+progress, retry, and cancel. The queue persists across quits — a job that
+was mid-download when Grab closed shows back up as "queued," not lost.
+
+Cookie-based auth, sleep interval, MP4 preference, playlist-prompt default,
+and other advanced options are under the app's Settings (⌘,).
 
 ## Updating
 
