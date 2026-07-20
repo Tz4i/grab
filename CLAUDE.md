@@ -16,43 +16,35 @@ project.yml                xcodegen spec (source of truth for project settings,
                               the SUFeedURL/SUPublicEDKey/SUEnableAutomaticChecks
                               Info.plist keys — see "Auto-updates (Sparkle)" below)
 appcast.xml                 Sparkle's update feed, hosted straight out of this
-                              repo (raw.githubusercontent.com) — see "Auto-updates
-                              (Sparkle)" below. Rewritten by scripts/release.sh
-                              on every release; don't hand-edit except to fix a
-                              mistake, and re-read that section first if you do.
+                              repo (raw.githubusercontent.com). Rewritten by
+                              scripts/release.sh on every release; don't
+                              hand-edit except to fix a mistake.
 Grab/Sources/
   GrabApp.swift             @main. Window scene (main UI) + Settings scene
-                              (Cmd+,) -> SettingsView, defined in ContentView.swift.
-                              Also owns the app-lifetime SPUStandardUpdaterController
-                              (Sparkle) and the "Check for Updates…" app-menu
-                              command — see "Auto-updates (Sparkle)" below.
-  CheckForUpdatesView.swift  Sparkle's own documented SwiftUI pattern for a
-                              self-disabling "Check for Updates…" menu item —
-                              see "Auto-updates (Sparkle)" below.
+                              (Cmd+,) -> SettingsView. Owns the app-lifetime
+                              SPUStandardUpdaterController (Sparkle) and the
+                              "Check for Updates…" app-menu command.
+  CheckForUpdatesView.swift  Sparkle's documented SwiftUI pattern for a
+                              self-disabling "Check for Updates…" menu item.
   ContentView.swift          all SwiftUI UI — see "UI architecture" below.
-                              Also contains SettingsView (Cmd+, window) and
-                              the private LogView helper view.
+                              Also SettingsView (Cmd+, window) and the private
+                              LogView helper view.
   AppViewModel.swift         @MainActor ObservableObject orchestrating
                               fetch -> download -> convert. Owns the log
-                              buffer (a LogBuffer, not a raw String — see
-                              "Log buffer capping/throttling" below), a
-                              single ProcessRunner instance, progress state,
-                              the detected-color-info published for the UI
-                              badge, lastOutputURL (drives the "Reveal in
-                              Finder" button), and diskSpaceWarning (drives
-                              the pre-flight low-disk-space Continue/Cancel
-                              alert — see "Retry safety / disk-space
-                              handling" below). runDownloadAndConvert is now
-                              a thin wrapper around DownloadEngine.run (see
-                              DownloadEngine.swift); AppViewModel conforms
-                              to DownloadProgressSink for the single-video
-                              path. Also owns the playlist queue's jobs/
-                              isProcessingQueue/isEnumeratingPlaylist state
-                              and the separate queueRunner — see
-                              AppViewModel+Queue.swift and "Playlist
-                              support" below.
+                              buffer (LogBuffer, not a raw String), a single
+                              ProcessRunner, progress state, detected color
+                              info, lastOutputURL (Reveal in Finder), and
+                              diskSpaceWarning (pre-flight Continue/Cancel
+                              alert). runDownloadAndConvert is a thin wrapper
+                              around DownloadEngine.run; AppViewModel
+                              conforms to DownloadProgressSink for the
+                              single-video path. Also owns the playlist
+                              queue's jobs/isProcessingQueue/
+                              isEnumeratingPlaylist state and the separate
+                              queueRunner — see AppViewModel+Queue.swift and
+                              "Playlist support" below.
   YTDLPService.swift          -J fetch + JSON decode (fetchFormats/
-                              parseVideoInfo, yields both VideoMetadata and
+                              parseVideoInfo, yields VideoMetadata +
                               [VideoFormat] in one request), download arg
                               builder, after_move output-path extraction,
                               download progress-line parser, failure
@@ -60,670 +52,486 @@ Grab/Sources/
                               YTDLPFailureKind), version check (fetchVersion)
   FFmpegService.swift        ffprobe color probe, SDR/HDR conversion arg
                               builders for both ProRes and H.264 (shared
-                              videoFilter() helper for the HDR/downscale
-                              chain), duration probe + time=/speed=
-                              progress-line parsers, ETA formatter,
-                              hardware/software encoder selection for both
-                              conversion modes, video-dimensions probe +
-                              estimateOutputBytes (pre-flight disk-space
-                              estimate — see below)
+                              videoFilter() helper), duration probe +
+                              time=/speed= progress-line parsers, ETA
+                              formatter, hardware/software encoder
+                              selection, video-dimensions probe +
+                              estimateOutputBytes (disk-space estimate)
   ProcessRunner.swift         Process wrapper: async/await, streaming
                               stdout+stderr, cancellation, PATH injection,
                               final-drain-on-exit (see gotcha below)
   Tools.swift                 binary path resolution (searches
                               /opt/homebrew/bin, /usr/local/bin, /usr/bin
-                              in order — see "Dependency checking" below)
-                              + the pre-existing missing-tool check used by
+                              in order) + the missing-tool check used by
                               runtime alerts
   Models.swift                 VideoFormat (+ resolutionPixels/Height),
                               VideoMetadata (title/thumbnail/duration/
-                              channel, shown so the user can confirm the
-                              right video was found — see "Video metadata
-                              display" below), ProResTier, ConversionMode, H264Quality,
-                              GrabError, CookieBrowser, ActionableAlert
-                              (+ its .make(for:) factory), SystemFailureKind
-                              (fatal-vs-transient failure classification
-                              shared by yt-dlp/ffmpeg — see "Retry safety"
-                              below), DiskSpaceWarning. Also PlaylistEntry,
+                              channel), ProResTier, ConversionMode,
+                              H264Quality, GrabError, CookieBrowser,
+                              ActionableAlert (+ .make(for:)),
+                              SystemFailureKind (fatal-vs-transient failure
+                              classification shared by yt-dlp/ffmpeg),
+                              DiskSpaceWarning. Also PlaylistEntry,
                               PlaylistFormatPolicy, PlaylistPromptDefault,
                               YouTubeURLKind (+ .classify), JobStatus, Job
                               — see "Playlist support" below.
-  LogBuffer.swift               pure-Swift (no SwiftUI/Foundation-adjacent
-                              deps beyond Foundation itself), line-oriented,
-                              capped + frame=-collapsing log buffer — see
-                              "Log buffer capping/throttling" below.
-                              Harness-testable like YTDLPService/
-                              FFmpegService (zero SwiftUI imports).
+  LogBuffer.swift               pure-Swift, line-oriented, capped +
+                              frame=-collapsing log buffer — see "Log
+                              buffer capping/throttling" below. Zero
+                              SwiftUI imports, harness-testable.
   DiskSpaceService.swift        free-space lookup (volumeAvailableCapacity
                               ForImportantUsage) + ByteCountFormatter
-                              wrapper, used by both the pre-flight warning
-                              and the post-hoc disk-full alert. Plain
-                              FileManager/URL logic, no subprocess — kept
-                              out of FFmpegService for that reason. Also
-                              harness-testable.
+                              wrapper. Plain FileManager/URL logic, no
+                              subprocess.
   NotificationService.swift    UNUserNotificationCenter wrapper — posts a
                               local notification on job completion, with a
-                              "Reveal in Finder" notification action (needs
-                              a small NSObject delegate class, see below).
-                              Fully independent of the download/convert
-                              pipeline.
+                              "Reveal in Finder" notification action.
   Dependencies.swift           DependencyKind/DependencyStatus/
-                              DependencyService — the first-run dependency
-                              setup screen's model layer, separate from
-                              Tools.swift's runtime missing-tool check (see
-                              "Dependency checking" below for why both exist)
+                              DependencyService — first-run dependency
+                              setup screen's model layer (broader than
+                              Tools.swift's runtime check — see
+                              "Dependency checking" below)
   DependencySetupViewModel.swift  @MainActor ObservableObject driving the
                               setup sheet: refresh/install/copy-command/
                               open-Terminal actions
-  DependencySetupView.swift    the setup sheet's SwiftUI view: dependency
-                              list + Homebrew-missing callout + disclaimers
-                              + "I understand" checkbox
+  DependencySetupView.swift    the setup sheet's SwiftUI view
   BasicModeService.swift        pure format-selection logic for Basic mode
                               (availableResolutionChoices/plan/
                               planForPolicy) — no SwiftUI import,
-                              harness-testable like YTDLPService/
-                              FFmpegService. See "Basic / Advanced mode"
-                              and "Playlist support" below.
-  PlaylistFormatSelector.swift   Advanced-mode's playlist-queue format
-                              pick (advancedFormatSelector) — no
-                              playability guarantee, kept out of
-                              BasicModeService since that file's scope is
-                              explicitly Basic-mode-only. See "Playlist
-                              support" below.
+                              harness-testable. See "Basic / Advanced
+                              mode" and "Playlist support" below.
+  PlaylistFormatSelector.swift   Advanced-mode's playlist-queue format pick
+                              (advancedFormatSelector, no playability
+                              guarantee) — kept out of BasicModeService,
+                              which is explicitly Basic-mode-only.
   DownloadEngine.swift          @MainActor enum — the shared download+
                               convert engine extracted from AppViewModel,
                               used by both the single-video path and the
                               playlist queue. DownloadProgressSink
-                              protocol lives here too. See "Playlist
-                              support" below.
-  AppViewModel+Queue.swift      extension on AppViewModel — all playlist-
-                              queue processing logic (enqueue/
-                              processQueue/processJob/cancel/retry/clear/
-                              reorder), the private JobSink adapter, and
-                              queue persistence. See "Playlist support"
-                              below.
+                              protocol lives here too.
+  AppViewModel+Queue.swift      extension on AppViewModel — playlist-queue
+                              processing (enqueue/processQueue/processJob/
+                              cancel/retry/clear/reorder), the private
+                              JobSink adapter, and queue persistence.
 Grab/Resources/
   Info.plist, Grab.entitlements   generated by xcodegen from project.yml
   Assets.xcassets/AppIcon.appiconset   app icon (16-512, 1x/2x)
 scripts/release.sh           Release build + DMG packaging + Sparkle EdDSA
-                              signing + appcast.xml update (see "Release &
-                              distribution" and "Auto-updates (Sparkle)" below)
+                              signing + appcast.xml update
 scripts/update_appcast.py    Inserts/replaces one release's <item> in
-                              appcast.xml — called from release.sh, not meant
-                              to be run standalone. See "Auto-updates (Sparkle)".
+                              appcast.xml — called from release.sh, not
+                              meant to be run standalone.
 ```
 
 ## Binaries
 
-Hardcoded absolute paths in `Tools.swift` (GUI apps don't inherit shell
-PATH, so these must never rely on `$PATH` lookup):
-
-- `/opt/homebrew/bin/yt-dlp`
-- `/opt/homebrew/bin/ffmpeg`
-- `/opt/homebrew/bin/ffprobe`
+Hardcoded absolute paths, resolved via `Tool.searchPrefixes` in
+`Tools.swift`: `/opt/homebrew/bin` (Apple Silicon) → `/usr/local/bin`
+(Intel) → `/usr/bin` (fallback, no dependency actually lives here in
+practice). First match per tool wins, resolved once per launch. GUI apps
+don't inherit shell `PATH`, so these must never rely on `$PATH` lookup.
 
 **Two PATH fixes are both required and both present** — don't remove either:
 
-1. `YTDLPService.downloadArguments` passes `--ffmpeg-location /opt/homebrew/bin`
+1. `YTDLPService.downloadArguments` passes `--ffmpeg-location <resolved dir>`
    explicitly, because yt-dlp itself shells out to `ffmpeg` to merge
    video+audio streams and needs to be told where to find it.
 2. `ProcessRunner.run` sets `process.environment` via
-   `environmentWithHomebrewPath()`, which prepends `/opt/homebrew/bin` to
-   whatever `PATH` is in `ProcessInfo.processInfo.environment`, for every
-   process it launches (yt-dlp, ffmpeg, ffprobe alike).
+   `environmentWithHomebrewPath()`, which prepends the resolved prefix to
+   `PATH`, for every process it launches (yt-dlp, ffmpeg, ffprobe alike).
 
 Without both, `yt-dlp -f "video+audio"` silently produces two separate
-files instead of one merged file (this bit us once already — see git
-history / conversation, not reproduced here).
+files instead of one merged file (this bit us once already).
 
 ## UI architecture (ContentView.swift)
 
-Deployment target is macOS 14.0. Everything in use (`Table` with
-`sortOrder`, `Form(.grouped)`, materials, `.toolbar`, `GroupBox`,
-`ContentUnavailableView`, `DisclosureGroup`, `Settings` scene) is available
-at or below macOS 14; `ContentUnavailableView` (macOS 14/iOS 17+) is the
-newest API in use, sitting exactly at the deployment floor. No SDK bump
-needed for anything here.
+Deployment target macOS 14.0. `Table` with `sortOrder`, `Form(.grouped)`,
+materials, `.toolbar`, `GroupBox`, `ContentUnavailableView`,
+`DisclosureGroup`, `Settings` scene — all available at/below macOS 14.
 
-Two rounds of UI work happened. Round 1 (native-controls pass) put a
-`VSplitView` with a big resizable log pane at the bottom. **Round 2 removed
-that** — the log is no longer a prominent resizable pane. Current layout,
-top to bottom in a single `VStack` (no more `VSplitView`):
+Top to bottom, single `VStack` (no `VSplitView`):
 
-- **Toolbar** (not floating buttons): URL field (`.principal`), then
-  Fetch Formats / Best Quality / Cancel (conditional on `isBusy`) / Download
-  as `.primaryAction` items. Presence of `.toolbar` content is what gives
-  the window its native unified-toolbar translucent title bar automatically
-  — no explicit material/titlebar code.
-- **Formats `GroupBox`** containing the `Table` (`.frame(maxHeight: .infinity)`
-  so it's the one section that actually grows/shrinks with the window —
-  this is what fixed the "dead space" complaint from round 1) plus a footer
-  row: "Use best audio automatically" toggle, "Hide below 720p" toggle,
-  selection summary text.
-- **Color indicator badge** (`colorIndicatorBadge`): a small capsule
-  (`.background(.quaternary, in: Capsule())`) showing
-  `viewModel.detectedColorInfo` — "SDR (bt709)" or "HDR (.../PQ) — will
-  tone-map to SDR" or "not yet checked". Populated by `AppViewModel` after
-  *every* successful download now (previously only when ProRes conversion
-  was on — see below), so it's informative even if you never convert.
-- **Output `Form(.grouped)`**: Folder row, then a ProRes section (toggle,
-  tier picker, downscale toggle, delete-source-after-conversion toggle —
-  the last three only rendered when the ProRes toggle is on). No manual
-  `.frame(minHeight:)` padding — round 1 had some and it caused visible
-  dead space; Form now just sizes to its natural content height.
-- **Status/progress section** (`statusSection`): when `viewModel.isBusy`,
-  shows `progressBarView` — a determinate `ProgressView(value:)` + percent
-  + ETA when `viewModel.progressFraction`/`progressETA` are populated,
-  falling back to an indeterminate spinner otherwise (this fallback matters
-  — see the yt-dlp `--progress` gotcha below, some phases/short clips may
-  never produce a fraction). When idle, shows `lastError` if any. Below
-  that, if `showLogPanel` (Settings-scene toggle, `@AppStorage`, default
-  true) is on: a native `DisclosureGroup("Show details", isExpanded:
-  $logExpanded)` wrapping `LogView` — `logExpanded` defaults to **false**
-  (collapsed) and is itself `@AppStorage`-persisted. This is the "log
-  becomes a debugging disclosure" requirement — it's no longer the visual
-  centerpiece.
-- **Video/audio selection**: two per-row SF Symbol icon buttons
+- **Toolbar**: mode `Picker` (Basic/Advanced, `.navigation` placement),
+  paste-and-fetch button, URL field (`.principal`), then Fetch Formats /
+  Best Quality / Cancel (conditional on busy) / Download as
+  `.primaryAction` items. Presence of `.toolbar` alone gives the window
+  its native unified-toolbar translucent title bar.
+- **Video info card** (`videoInfoSection`): spinner + "Fetching video
+  info…" while fetching, else the fetched title/thumbnail/duration/
+  channel once available (`AsyncImage` for the thumbnail, built-in
+  loading/failure states, no hand-rolled fetch/cache needed). Same view/
+  state in both modes; a `prominent: Bool` (`appMode == .basic`) only
+  changes sizing (176×99 thumbnail / `.title3` in Basic vs 96×54 /
+  `.headline` in Advanced), not structure.
+- **Formats `SectionCard`** (Advanced only) containing the `Table`
+  (`.frame(minHeight: 200, maxHeight: 520)` — a real finite cap, ~15-17
+  rows before scrolling) plus a footer row: "Use best audio
+  automatically" toggle, "Hide below 720p" toggle, selection summary.
+  Default `sortOrder` is `[KeyPathComparator(\.resolutionPixels, order:
+  .reverse)]` — numeric descending, not lexicographic string sort.
+  `TableColumn`'s sort key (`resolutionPixels: Int`) and its displayed
+  content (`displayResolution: String`) are deliberately different
+  keypaths. "Hide below 720p" filters via `resolutionHeight`.
+- **Color indicator badge**: small capsule showing
+  `viewModel.detectedColorInfo` — "SDR (bt709)" / "HDR (.../PQ) — will
+  tone-map to SDR" / "not yet checked". Populated after *every*
+  successful download (not just when converting to ProRes), so it's
+  informative even without conversion.
+- **Output folder / Conversion `SectionCard`s** (`Form(.grouped)`
+  wrapped): folder row; then a Conversion `SectionCard` (Advanced only)
+  with the ConversionMode picker, tier/quality pickers, downscale
+  toggle, delete-source toggle.
+- **Queue section** (`queueSection`, shown in both modes whenever
+  `!viewModel.jobs.isEmpty`) — see "Playlist support" below.
+- **Status/progress section**: when busy, a determinate
+  `ProgressView(value:)` + percent + ETA when available, else an
+  indeterminate spinner (yt-dlp's `--progress` output doesn't always
+  produce a fraction, e.g. some phases/short clips). When idle, shows
+  `lastError` if any, and the "Reveal in Finder" button if
+  `lastOutputURL != nil`. Below that, if `showLogPanel` (Settings
+  toggle, default true): a `DisclosureGroup("Show details", isExpanded:
+  $logExpanded)` wrapping `LogView` (`.frame(minHeight: 160, maxHeight:
+  320)` — a real cap; without one, ffmpeg's `frame=...` spam blows out
+  window auto-sizing, see "Log buffer capping" below). `logExpanded`
+  defaults to **false**.
+- **Video/audio selection** (Advanced): per-row SF Symbol icon buttons
   (`video`/`video.fill`, `waveform.circle`/`waveform.circle.fill`),
-  `.buttonStyle(.borderless)`, tinted `Color.accentColor` when active,
-  disabled+dimmed when not applicable (video button disabled for
-  audio-only rows; audio button disabled for video rows or when "Use best
-  audio automatically" is on). Unchanged from round 1.
-- **Table sorting**: default `sortOrder` is `[KeyPathComparator(\.resolutionPixels,
-  order: .reverse)]` — descending by resolution, numeric (not the round-1
-  lexicographic-String approach, which sorted "139" before "18"). The
-  Resolution `TableColumn`'s `value:` keypath is `\.resolutionPixels` (Int,
-  on `VideoFormat` in Models.swift) while its `content:` closure still
-  displays `format.displayResolution` (the human string) — `TableColumn`
-  lets sort-key and display be different keypaths/closures, decoupled.
-  "Hide below 720p" filters via `resolutionHeight`, both computed
-  properties, both pure/display-only, added to `VideoFormat` this round.
-- **Best Quality** toolbar button calls `AppViewModel.selectBestQuality()`,
-  which just sets `selectedVideoID`/`useBestAudio` to what the highest
-  `resolutionPixels` row would produce — identical effect to clicking
-  those controls by hand, no new selection state or download-path change.
-- **Materials**: round 2's `DisclosureGroup` uses no custom material at all
-  (it's a native disclosure triangle, not a hand-built collapse header like
-  round 1 had). The log text itself is still solid
-  `Color(nsColor: .textBackgroundColor)`, never translucent material behind
-  dense text. The color-indicator badge uses `.quaternary` (a semantic
-  system material/color). Round 4 added `.background(.regularMaterial)` to
-  the root `ContentView` `VStack` (window chrome/background translucency —
-  see "Window chrome translucency" below) — everywhere else is still
-  semantic colors only (`Color.accentColor`, `.secondary`, `.red`,
-  `.purple`/`.green` for the HDR/SDR badge tint) — no hardcoded hex.
+  tinted `Color.accentColor` when active, disabled+dimmed when not
+  applicable.
+- **Materials**: `SectionCard` (see "Visual polish" below) is the shared
+  "gently raised surface" wrapper for Formats/Download/Output/Conversion.
+  `LogView` and the formats `Table` stay solid/opaque. The color-
+  indicator badge uses `.quaternary`.
 - **Persistence**: `outputDirectoryPath`, `conversionMode`, `proResTier`
-  (enum, `AppStorage` supports `RawRepresentable` with `Int`/`String`
-  `RawValue` directly — no Models.swift change needed), `downscale4K`,
-  `deleteSourceAfterConversion`, `useHardwareAcceleration`, `hideBelow720p`,
-  `logExpanded`, `showLogPanel`, `preferMP4`, `sleepInterval`,
-  `cookiesFromBrowser` (`CookieBrowser`, String rawValue, same
-  `AppStorage`-enum trick) are all `@AppStorage` in ContentView/SettingsView
-  — `cookiesFromBrowser` and `showLogPanel` are each declared independently
-  in *both* `ContentView` and `SettingsView` under the same key string,
-  which is the correct/standard way to share one UserDefaults-backed value
-  across two separate SwiftUI scenes without an environment object.
-  `useBestAudio` is the one exception — it lives on `AppViewModel`
-  (tightly coupled to selection logic there), persisted by hand via
-  `UserDefaults.standard` directly in its `@Published` property's default
-  expression + `didSet`, not the `@AppStorage` wrapper (that wrapper is
-  meant for View/App types; using it on a plain `ObservableObject`
-  property doesn't get you automatic view invalidation). Per-video
-  selection (`selectedVideoID`/`selectedAudioID`) is deliberately **not**
-  persisted — doesn't make sense across different videos/launches.
+  (default `.standard`/"422" — not `.hq`, fixed after being wrong in
+  every commit for a while), `downscale4K`, `deleteSourceAfterConversion`,
+  `useHardwareAcceleration`, `hideBelow720p`, `logExpanded`,
+  `showLogPanel`, `preferMP4`, `sleepInterval`, `cookiesFromBrowser`,
+  `appMode`, `playlistPromptDefault`, `defaultPlaylistFormatPolicy`,
+  `basicProResTier`, `basicDeleteSourceAfterConversion` are all
+  `@AppStorage`. `cookiesFromBrowser`/`showLogPanel`/
+  `debugForceShowSetupScreen` are each declared independently in both
+  `ContentView` and `SettingsView` under the same key string — the
+  correct way to share one UserDefaults-backed value across two SwiftUI
+  scenes without an environment object. `useBestAudio` lives on
+  `AppViewModel` instead (persisted by hand via `UserDefaults.standard`
+  in its `didSet` — `@AppStorage` is for View/App types, not plain
+  `ObservableObject` properties). Per-video selection
+  (`selectedVideoID`/`selectedAudioID`) is deliberately not persisted.
 
-### Window sizing (round 3) — a real fix, and a huge false lead
+### Window-sizing gotchas (hit and fixed multiple times — read before touching sizing)
 
-Two actual bugs existed and got fixed:
+- **`Form(.grouped)`/`GroupBox` report a flexible, not content-sized,
+  ideal height inside a `VStack`.** Fix: `.fixedSize(horizontal: false,
+  vertical: true)` on any Form/GroupBox that should size to its content.
+- **`maxHeight: .infinity` anywhere in a frame chain makes SwiftUI's
+  window ideal-size computation ignore nested `idealHeight` hints** and
+  just fit all content — a real, finite `maxHeight` is what actually
+  bounds a view (used for the Table, LogView, and the queue list).
+- **Any unbounded-height list (Table, LogView, queue list) will blow out
+  window auto-sizing** if ffmpeg/yt-dlp output or a long list grows
+  unboundedly — this exact bug class has been hit and fixed three+
+  times. Always give scrolling content a finite `maxHeight`.
+- **`window.minSize` does not live-update** after content changes
+  post-layout (confirmed by reading it before/after forcing new content
+  in) — `.windowResizability(.automatic)` only computes it reliably
+  around initial layout. Per-mode/per-state default heights are
+  therefore *not* all read live from `minSize`; see below.
+- **Root content frame needs both `alignment: .top` AND `maxHeight:
+  .infinity`.** `alignment: .top` alone does nothing if the frame's
+  resulting size already equals the content's natural size (no extra
+  space to align within) — without `maxHeight: .infinity`, a taller
+  window just centers undersized content instead of revealing more of
+  it, silently eating extra height as blank space above the content.
+- **`cfprefsd` caches window-frame-autosave data in memory per window
+  `id`, independent of `defaults delete`/`defaults write`.** If a window
+  ever seems to ignore `.defaultSize`, `.frame()`, or a preferences wipe
+  during iteration (or lands off-screen at a stale multi-monitor
+  position), try `killall cfprefsd` (or `defaults delete com.local.grab
+  "NSWindow Frame main"` + `killall cfprefsd`) before assuming it's a
+  real layout bug — this has been the cause more than once, including
+  across a disconnected-external-display trigger, not just rapid
+  test-relaunch cycles.
+- **A rebuilt app can appear to ignore source changes entirely if a
+  stale previously-debugged process is still running** (launched by
+  Xcode's Run with `-NSDocumentRevisionsDebugMode YES`, can survive
+  `pkill`/`kill -9`/AppleScript quit). Check `ps aux | grep Grab` for
+  that flag, and confirm a genuinely new process via a new
+  `CGWindowNumber`, before concluding a code change "isn't taking."
 
-1. **The Download/Output `Form` sections were expanding to fill leftover
-   `VStack` space instead of sizing to their content.** `.formStyle(.grouped)`
-   on macOS is backed by something List/ScrollView-like, which reports a
-   flexible (not content-sized) ideal height inside a `VStack` unless told
-   otherwise. Fix: `.fixedSize(horizontal: false, vertical: true)` on both
-   `downloadOptionsSection` and `outputSection`'s `Form` — forces them to
-   their true content height. This is *the* fix for "big empty gap between
-   Download card and Output section."
-2. **The formats `Table` needed a bound.** `.frame(minHeight: 200, maxHeight:
-   .infinity)` let it grow completely unbounded — with enough rows (a real
-   video easily has 20-40 formats) it would happily claim enormous height
-   with no visual limit. Fixed to `.frame(minHeight: 200, maxHeight: 520)` —
-   a genuinely finite cap (~15-17 rows before internal scrolling kicks in),
-   which is what actually keeps default/typical window sizing sane. An
-   `idealHeight:` hint alone (still with `maxHeight: .infinity`) was tried
-   first and did *not* work — apparently whenever `maxHeight: .infinity` is
-   anywhere in a view's frame chain, macOS's ideal-size computation for the
-   *window* ignores any nested `idealHeight` and just computes "big enough
-   to fit all content." A real, finite `maxHeight` is what actually bounds it.
-
-**The huge false lead**: while diagnosing this, the window kept opening at
-a specific oversized frame (at one point 1774×1352) *regardless* of code
-changes — surviving `defaults delete com.local.grab`, full domain nukes,
-`.windowResizability` mode changes, and even a hardcoded
-`.frame(width:900, height:780)` on the root view. Root cause: **`cfprefsd`
-(the macOS preferences daemon) caches window-frame-autosave data in memory
-per window `id`, and `defaults delete`/`defaults write` alone don't evict
-that cache** — only `killall cfprefsd` does. Proved this two ways: (a)
-changing `Window(id:)` from `"main"` to a throwaway id immediately produced
-the correct size (proving it was keyed by id, not a real layout bug), and
-(b) `killall cfprefsd` then relaunching under the *original* `"main"` id
-also immediately fixed it. This was 100% an artifact of rapid repeated
-test-relaunch cycles on this dev machine, not a bug in the app or a normal
-user's experience. **If a window ever seems to ignore `.defaultSize`,
-`.frame()`, or `defaults delete` during iteration, try `killall cfprefsd`
-before assuming it's a SwiftUI/layout bug** — it will cost far less time
-than chasing the layout theory first (ask why this note exists if that
-happens again).
-
-`GrabApp.swift` ended up on `.windowResizability(.automatic)` (not
-`.contentSize`/`.contentMinSize` — tried both while chasing the false
-lead above; neither was the actual fix, and `.automatic` is the simplest/
-most standard choice once the real bugs were fixed) + `.defaultSize(width:
-900, height: 780)`.
-
-**Verification method for this class of bug**: screen recording permission
-was available this session (wasn't in earlier sessions — permissions can
-change between sessions, always just try rather than assuming the old
-"can't verify visually" note still holds). Accessibility/UI-scripting via
-`osascript`/System Events was *not* available, so buttons couldn't be
-clicked programmatically — worked around this by temporarily injecting
-mock `VideoFormat` data directly into `viewModel.formats` inside
-`ContentView`'s `.task` block (populates the realistic populated-table
-state that empty-state screenshots can't show), screenshotting, then
-reverting the injection before considering the work done. Real window
-bounds (not just screenshots) were queried directly via
-`Quartz.CGWindowListCopyWindowInfo` (needs `pip3 install
-pyobjc-framework-Quartz`) — this only needs Screen Recording permission,
-not Accessibility, and gave exact pixel dimensions that made the
-`cfprefsd` diagnosis possible (screenshots alone left room to
-misinterpret what was window vs. desktop background).
+**Current per-mode window sizing** (`WindowAccessor` + `applyWindowHeight`,
+re-run on `appMode`, `isBusy`, `lastOutputURL`, `lastError`,
+`logExpanded`, and `viewModel.jobs` changes, `animate: true` except on
+first resolve): `GrabApp`'s `.defaultSize` is `(940, 350)` (close to
+Basic's idle minimum, just avoids a grow-then-shrink flash before the
+first correction runs). Root frame is `minWidth: 860`. Advanced mode's
+default height is a hardcoded **1480** (measured via a `GeometryReader`
+on `versionFooter` reading true layout position in a named coordinate
+space — not a screenshot, which this dev machine's own short screen
+can't validate directly; re-tuned upward each time new content
+[SectionCard headers, the queue section] pushed the true minimum past
+the previous constant). Basic mode's default is **`hostWindow.minSize.
+height`** (~352 idle) normally, or a hardcoded **780** once
+`basicNeedsExpandedHeight` is true (`isBusy || lastOutputURL != nil ||
+lastError != nil || logExpanded || !jobs.isEmpty`) — one shared
+"expanded" height rather than a value per state, since those states
+transition into each other within a single job and resizing at every
+micro-transition would be worse than settling once. `.windowResizability
+(.automatic)` governs manual resizing in both directions throughout;
+none of this changes what a user can drag to.
 
 ### Reveal in Finder
 
-`AppViewModel.lastOutputURL: URL?` — set to the ProRes `.mov` if
-conversion ran, otherwise the downloaded file, at the exact two places
-`NotificationService.postCompletion` is already called (success only;
-reset to `nil` at the start of every new `beginDownload`). The in-window
-button (`statusSection`, shown when idle and `lastOutputURL != nil`) calls
-`NSWorkspace.shared.activateFileViewerSelecting([outputURL])` directly —
-plain AppKit, no wrapper needed.
-
-The notification action version needed more: `UNNotificationAction` +
-`UNNotificationCategory` registered once via `setNotificationCategories`
-(in `NotificationService.requestAuthorizationIfNeeded`), the file path
-stashed in `content.userInfo` (categories/actions can't carry a `URL`
-directly, only plist-compatible values), and a small
-`NotificationDelegate: NSObject, UNUserNotificationCenterDelegate` — the
-delegate protocol requires `NSObjectProtocol` conformance, so this can't
-just be a free function or a struct. Also implements `willPresent` to
-return `[.banner, .sound]`, since UNUserNotificationCenter suppresses
-notification banners by default while the app is frontmost — without it,
-completing a job while Grab is the active app would silently show
-nothing. `revealActionID`/`fileURLKey` are `fileprivate` constants shared
-between `NotificationService` and `NotificationDelegate` (same file) so
-the action-identifier string and userInfo key aren't duplicated/typo-able
-across the two types.
+`AppViewModel.lastOutputURL: URL?` — set to the ProRes/H.264 output if
+conversion ran, else the downloaded file, right where
+`NotificationService.postCompletion` is called (success only; reset to
+`nil` at the start of every new run). In-window button calls
+`NSWorkspace.shared.activateFileViewerSelecting([outputURL])` directly.
+The notification-action version needed `UNNotificationAction` +
+`UNNotificationCategory` (registered once via
+`setNotificationCategories`), the file path stashed in
+`content.userInfo` (categories/actions can't carry a `URL` directly),
+and `NotificationDelegate: NSObject, UNUserNotificationCenterDelegate`
+(the protocol requires `NSObjectProtocol`, so this can't be a free
+function/struct) — also implements `willPresent` returning
+`[.banner, .sound]`, since UN suppresses banners by default while the
+app is frontmost.
 
 ## Key implementation details
 
-**Format + metadata fetching** (`YTDLPService.fetchFormats`/`parseVideoInfo`):
-**no longer uses `-F`'s whitespace-padded table.** A later session replaced
-it wholesale with a single `yt-dlp -J --no-playlist --no-warnings` call,
-decoded as JSON into a private `YTDLPVideoInfo`/`YTDLPFormatInfo` pair —
-one request now yields both the format list *and* the video metadata
-(title/thumbnail/duration/channel, see "Video metadata display" below),
-where the old approach would have needed a second request for metadata
-alone. JSON also turned out more reliable than the table ever was:
-`resolution`/`vcodec`/`format_note` arrive pre-separated instead of
-needing column-boundary inference, and `filesize`/`filesize_approx` are
-real `Int64` byte counts (formatted for display via `ByteCountFormatter`,
-`~`-prefixed when only the approx figure is available — mirroring the old
-table's own `~`/`≈` convention) rather than yt-dlp's own pre-formatted
-string. Parses from the first `{` to the last `}` in the captured output
-rather than trusting the whole string is pure JSON, same defensive
-pattern as `checkForUpdate`'s brew-JSON parsing further down this file —
-verified empirically that `-J --no-warnings` prints clean JSON with
-nothing on stderr, but this is a cheap hedge against a future yt-dlp
-version emitting a stray line anyway.
-
-- mhtml/storyboard entries are filtered via `ext == "mhtml"`,
-  `protocol == "mhtml"`, and `format_note` containing "storyboard" — yt-dlp
-  doesn't mark every storyboard entry the same way across extractors, so
-  all three are checked.
-- Audio-only rows are `vcodec == "none"` (yt-dlp's own JSON convention),
-  not the old table parser's "RESOLUTION column contains 'audio only'"
-  string match.
-- The old whitespace-mask table parser (`parseFormats`/`isHeaderLine`) is
-  gone entirely, not kept alongside the JSON path — there's no case where
-  Grab still needs the `-F` table now that `-J` provides a strict superset
-  of what it parsed out.
-- Verified end-to-end against real yt-dlp output (real fetch of the "Me at
-  the zoo" test clip, checked format count/fields/audio-only detection),
-  a bad/nonexistent video ID (confirms `classifyFailure` still recognizes
-  yt-dlp's stderr wording — unchanged by the `-F`→`-J` switch, since
-  failures still surface as the same plain-text `ERROR: ...` lines either
-  way), and synthetic JSON exercising storyboard filtering and the
-  exact/approx filesize distinction — see "The actually-useful
-  verification method" below for the harness pattern. Also re-ran
-  `BasicModeService`'s harness checks against real `-J`-sourced formats
-  for the same test clip and got the identical `18+140`/no-conversion
-  plan as before this change, confirming `BasicModeService` (which only
-  reads `VideoFormat`'s fields, never yt-dlp's raw output) needed no
-  changes at all.
+**Format + metadata fetching** (`YTDLPService.fetchFormats`/
+`parseVideoInfo`): a single `yt-dlp -J --no-playlist --no-warnings` call,
+decoded as JSON, yields both the format list and video metadata (title/
+thumbnail/duration/channel) in one request — no separate `-F` table
+parsing anymore. `resolution`/`vcodec`/`format_note` arrive pre-
+separated; `filesize`/`filesize_approx` are real `Int64` byte counts
+(`~`-prefixed when only the approx figure is available). Parses from the
+first `{` to the last `}` rather than trusting the whole captured output
+is pure JSON (matches `checkForUpdate`'s brew-JSON parsing further down —
+`-J --no-warnings` is clean in practice, this is a cheap hedge).
+mhtml/storyboard entries filtered via `ext == "mhtml"`,
+`protocol == "mhtml"`, and `format_note` containing "storyboard" (yt-dlp
+isn't consistent about which marker a given extractor sets). Audio-only
+rows are `vcodec == "none"`.
 
 **Download → output path**: `downloadArguments` passes
-`--print "after_move:GRAB_OUTPUT_FILE:%(filepath)s"` so the exact final
-merged file path can be recovered from stdout after yt-dlp's postprocessing
-completes (`YTDLPService.extractOutputFile`), regardless of yt-dlp's title
-sanitization. Also forces `--merge-output-format mp4` for a predictable
-container. Don't try to reconstruct the output filename from the template
-string yourself — sanitization rules are yt-dlp-internal and not worth
-replicating.
+`--print "after_move:GRAB_OUTPUT_FILE:%(filepath)s"` to recover the exact
+final merged file path after postprocessing
+(`YTDLPService.extractOutputFile`) regardless of yt-dlp's title
+sanitization — don't try to reconstruct the filename from the template
+yourself. Also forces `--merge-output-format mp4` and (unconditionally)
+`--no-playlist` (see "Playlist support" below for why the latter matters).
 
-**`--print` silently suppresses yt-dlp's normal `[download]` progress
-output** (verified empirically: same command, only difference is presence
-of `--print`, and every `[download]`/`[Merger]`/`Deleting original file`
-line vanishes — even run directly in a terminal, nothing to do with our
-Process/Pipe code). This has been true since `--print after_move:...` was
-first added (an earlier session) — it just didn't matter until this
-session needed to parse those progress lines for the progress bar.
-`downloadArguments` now also passes `--progress` ("Show progress bar, even
-if in quiet mode"), which restores the `[download]` lines while leaving
-the `--print` marker output untouched. If you ever need to add another
-`--print` template, remember `--progress` has to stay or download progress
-parsing goes dark again. Note this does *not* bring back the `[Merger]`/
-`Deleting original file` postprocessor messages — those are still
-suppressed and aren't currently needed for anything (progress parsing only
-needs the `[download]` lines), but if a future feature wants them, `--print`
-is the reason they're missing, not a Process/pipe bug.
+**`--print` silently suppresses yt-dlp's normal `[download]`/`[Merger]`
+progress output** (verified: identical command, only `--print` present
+or absent, changes whether those lines appear at all — not a
+Process/Pipe bug). `downloadArguments` also passes `--progress`, which
+restores `[download]` lines (needed for progress parsing) while leaving
+`--print`'s own marker output untouched. `[Merger]`/"Deleting original
+file" postprocessor lines stay suppressed regardless — not currently
+needed. If you ever add another `--print` template, `--progress` must
+stay or download progress parsing goes dark again.
 
 **yt-dlp download-progress parsing** (`YTDLPService.parseDownloadProgress`):
-regex against lines like `[download]  45.2% of   10.50MiB at    1.23MiB/s
-ETA 00:07`. Deliberately does *not* match the final `[download] 100% of
-X in Y at Z` completion line (different format, no `ETA` token) — that's
-fine, the UI already falls back to an indeterminate spinner whenever
-`progressFraction` is nil, so a missed final-line match just means the bar
-holds its last known percentage rather than snapping to exactly 100 for an
-instant before the phase ends anyway.
+regex against `[download]  45.2% of   10.50MiB at    1.23MiB/s ETA
+00:07`-style lines. Deliberately does not match the final `100%`
+completion line (different format, no `ETA` token) — harmless, since the
+UI falls back to an indeterminate spinner whenever `progressFraction` is
+nil, so the bar just holds its last percentage briefly instead of
+snapping to 100.
 
-**Conversion mode** (`Models.swift`'s `ConversionMode`: `.none`/`.proRes`/
-`.h264`): the Output section's old single "Convert to ProRes" toggle is
-now a three-way picker — `@AppStorage("conversionMode")` replaced
-`convertToProRes`/`proResTier` as the persisted keys (old
-`convertToProRes` UserDefaults values are simply abandoned, no migration
-— this app has no real users yet). `AppViewModel.startDownload`/
-`retryWithBestQualitySelector`/`beginDownload`/`runDownloadAndConvert` all
-take `conversionMode: ConversionMode, proResTier: ProResTier, h264Quality:
-H264Quality` instead of the old `convertToProRes: Bool, tier: ProResTier`
-pair; `runDownloadAndConvert`'s tail branches on `conversionMode == .h264`
-(`isH264`) to pick encoder names/output URL/log wording, everything else
-(HDR detection, duration probe, hardware→software fallback, delete-source,
-notification) is shared, unchanged control flow between the two modes.
+**Conversion mode** (`ConversionMode`: `.none`/`.proRes`/`.h264`):
+`@AppStorage("conversionMode")` is the persisted key (no migration from
+the old `convertToProRes` bool — no real users existed at that point).
+`runDownloadAndConvert`'s tail branches on `conversionMode == .h264`
+(`isH264`) to pick encoder names/output URL/log wording; everything
+else (HDR detection, duration probe, hardware→software fallback,
+delete-source, notification) is shared control flow between modes.
 
 **ProRes conversion** (`FFmpegService`): `ffprobe -show_entries
 stream=color_transfer,color_primaries -of json` on the downloaded file.
 HDR iff `color_transfer == "smpte2084"` or `color_primaries` contains
-"bt2020"; everything else (including probe failures) falls back to the SDR
-path. The exact HDR tonemap filter chain and SDR path are spec'd by the
-user and encoded verbatim in `FFmpegService.conversionArguments` — don't
-tweak the filter string without being asked, After Effects compatibility
-was the reason for these specific flags.
+"bt2020"; everything else (including probe failures) falls back to SDR.
+The HDR tonemap filter chain and SDR path are spec'd verbatim in
+`FFmpegService.conversionArguments` for After Effects compatibility —
+don't tweak the filter string without being asked.
 
-**H.264 conversion** (`FFmpegService.h264ConversionArguments`): added
-alongside ProRes as a second conversion mode, output `.mp4` with `-c:a
-aac`. Shares the *exact same* HDR-detection and tone-map filter chain as
-ProRes — factored out into a private `FFmpegService.videoFilter(colorInfo:
-downscale4K:)` helper this session so neither path can drift from the
-other; downscale-to-4K works identically for both. UI copy is
-deliberately accurate about the editing tradeoff (ProRes: "scrubs
-smoothly... large files"; H.264: "much smaller... slower to scrub...
-less ideal for heavy compositing" — see `ConversionMode.
-tradeoffDescription`) — H.264 is never described as suitable "for After
-Effects," per explicit instruction.
+**H.264 conversion** (`FFmpegService.h264ConversionArguments`): output
+`.mp4` with `-c:a aac`. Shares the exact same HDR-detection/tone-map
+chain as ProRes via `FFmpegService.videoFilter(colorInfo:downscale4K:)`.
+UI copy is deliberately accurate about the tradeoff (ProRes: scrubs
+smoothly, large files; H.264: much smaller, slower to scrub, less ideal
+for heavy compositing — `ConversionMode.tradeoffDescription`) — H.264 is
+never described as suitable "for After Effects."
 
-Rate control is **asymmetric between hardware and software**, unlike
-ProRes's "identical flags, only -c:v differs" pattern — verified via
-`ffmpeg -h encoder=h264_videotoolbox`, which exposes no CRF/quality
-AVOption at all on this ffmpeg build (only profile/level/coder/etc.), so:
-- Hardware (`h264_videotoolbox`): flat target bitrate via `-b:v`
-  (`H264Quality.hardwareBitrate` — High=12M, Medium=6M, Low=2500k, not
-  resolution-scaled, deliberately kept to the spec's "simple quality
-  picker").
-- Software (`libx264`): standard `-crf` quality control
-  (`H264Quality.crf` — High=18, Medium=23, Low=28, the conventional x264
-  quality-to-CRF mapping).
+Rate control is **asymmetric between hardware and software**
+(`h264_videotoolbox` exposes no CRF/quality AVOption at all, verified
+via `ffmpeg -h encoder=h264_videotoolbox`):
+- Hardware: flat target bitrate via `-b:v` (`H264Quality.hardwareBitrate`
+  — High=12M, Medium=6M, Low=2500k, not resolution-scaled).
+- Software (`libx264`): `-crf` (`H264Quality.crf` — High=18, Medium=23,
+  Low=28).
 
-Neither raw CRF/bitrate numbers nor encoder names are exposed in the UI —
-just High/Medium/Low, per "don't expose raw encoder flags."
+Neither raw numbers nor encoder names are exposed in the UI — just
+High/Medium/Low.
 
-**Verified for real, full pipeline** (not just argument construction):
-downloaded the "Me at the zoo" test clip through the actual running app
-(temporarily driving `AppViewModel.startDownload` from `ContentView`'s
-`.task` with the mock-injection-then-revert pattern used elsewhere in
-this file) with `conversionMode: .h264, h264Quality: .low`. Real yt-dlp
-download → real ffprobe SDR detection → real `h264_videotoolbox` hardware
-encode (`-b:v 2500k`, correctly matching the Low tier) → completion →
-"Reveal in Finder" appeared. Confirmed the actual output file via
-`ffprobe`: `codec_name=h264` (video) + `codec_name=aac` (audio), exactly
-as spec'd. Also separately verified via the standalone harness: both
-`h264_videotoolbox` and `libx264` (forced software) complete successfully
-on real downloaded SDR content, output re-probed and confirmed
-h264+aac either way. Test files were deleted from `~/Downloads` after
-verification, not left behind.
-
-**HDR path not live-testable here, same as ProRes**: `h264ConversionArguments`
-reuses the same `zscale`-based filter chain, so it inherits the identical
-`--enable-libzimg`-missing limitation described below — verified by
-argument construction only (a synthetic HDR `ColorInfo`, checked the
-built `-vf` string matches exactly, with and without hardware/downscale),
-not by actually running it through this machine's ffmpeg.
-
-**This machine's Homebrew ffmpeg (8.1.1) was built without `--enable-libzimg`,
-so the `zscale` filter used in the HDR tone-map chain doesn't exist here**
-(`ffmpeg -vf zscale=... ...` → `No such filter: 'zscale'`, verified
-directly, unrelated to hw/sw encoder choice — the HDR filter chain fails
-before it would even reach the encoder). This is a pre-existing gap in the
-*environment*, not a code bug, and out of scope to fix unless asked — but
-it means the HDR path can't be live-tested end-to-end on this machine right
-now. The SDR path and the hardware-acceleration feature below were both
-verified for real; the HDR *filter chain* itself was only verified by
-argument construction (matches the spec'd string) and log-message wording,
-not by actually running it through ffmpeg here.
+**This machine's Homebrew ffmpeg (8.1.1) was built without
+`--enable-libzimg`, so `zscale` (used in the HDR tone-map chain) doesn't
+exist here** — a pre-existing environment gap, not a code bug; means the
+HDR path can only be verified by argument construction on this machine,
+not by actually running it.
 
 **Hardware acceleration** (`prores_videotoolbox` vs `prores_ks`): both
-encoders use *identical* `-profile:v` numbering for the tiers we support
-(0=proxy, 1=lt, 2=standard, 3=hq, 4=4444 — verified via `ffmpeg -h
-encoder=prores_videotoolbox` and `-h encoder=prores_ks`), so
-`FFmpegService.conversionArguments(..., useHardwareEncoder:)` only swaps
-the `-c:v` value; no tier-remapping table exists or is needed.
-`AppViewModel.runDownloadAndConvert` has a local `attemptConversion(useHardware:)`
-closure it calls once with the user's `useHardwareAcceleration` setting; if
-that attempt fails (nonzero exit) *and* hardware was requested, it logs an
-explicit fallback line and calls it again with `useHardware: false`. This
-covers "hardware encoder fails" and "requested tier unsupported" with the
-same generic exit-code check — deliberately not trying to distinguish
-*why* the hw attempt failed, per how the feature was specified. Verified
-for real: hardware encode of real downloaded SDR content produces a valid
-`profile=HQ` ProRes file at ~95x+ realtime speed; a synthetically-forced hw
-failure (invalid `-profile:v 99`, since 0-4 are always valid so a *real*
-tier failure isn't reproducible on this hardware) correctly falls through
-to a working software encode. Default is on (`@AppStorage
-("useHardwareAcceleration")`, default `true`).
+use identical `-profile:v` numbering for the supported tiers (0=proxy,
+1=lt, 2=standard, 3=hq, 4=4444), so only `-c:v` swaps.
+`attemptConversion(useHardware:)` tries the user's setting once; on
+failure (and only if hardware was requested), logs a fallback line and
+retries with `useHardware: false` — deliberately not distinguishing
+*why* hw failed. Default on (`@AppStorage("useHardwareAcceleration")`).
 
-**MP4 preference** (`-S "ext:mp4:m4a"`): a *sort* preference, not a hard
-filter — verified via `--simulate --print`, confirmed it still falls back
-to webm when mp4 isn't available at a given resolution rather than
-dropping resolution (this is exactly why `-S` was used instead of e.g.
-`-f "bv*[ext=mp4]+ba[ext=m4a]"`, which would be a hard filter and could
-silently drop to a lower resolution or fail entirely). Only added to the
-*download* command, not `-F` — `-S` affects `-f` selection, not what `-F`
-lists.
+**MP4 preference** (`-S "ext:mp4:m4a"`): a sort preference, not a hard
+filter — falls back to webm rather than dropping resolution when mp4
+isn't available at a given resolution (why `-S` was used over a hard
+`-f` filter). Only on the download command, not `-F`/`-J`.
 
 **Cookie-based auth** (`--cookies-from-browser`): accepted browser names
-verified via `yt-dlp --help` (`brave, chrome, chromium, edge, firefox,
-opera, safari, vivaldi, whale`) — `CookieBrowser`'s `rawValue`s (`safari,
-chrome, firefox, brave, edge`) are passed straight through as
-`commandLineValue`, no translation table. Applied to *both* `-F` fetch and
-the download (`YTDLPService.fetchFormats` and `.downloadArguments` both
-take `cookiesFromBrowser: CookieBrowser`). **Hard constraint, not just a
-preference: this app must never build a username/password form or handle
-Google credentials directly — browser cookie extraction is the only auth
-path, enforced by there being no other code path that touches
-credentials at all.** Verified for real that the flag itself is accepted
-by yt-dlp (doesn't error as an unrecognized option); actually reading
-Safari's cookie store failed in *this sandboxed test shell* specifically
-with `[Errno 1] Operation not permitted: .../Safari/.../Cookies.binarycookies`
-— that's macOS TCC/Full Disk Access, not a Grab or yt-dlp bug. A real user
-running the built `.app` normally (not from this restricted shell) needs
-Full Disk Access (or the browser-specific keychain/permission prompt) for
-this to actually retrieve cookies; if it doesn't, yt-dlp's own error
-message is what surfaces in the log/alert — nothing to catch specially for
-this, it's just a real environment permission, same category as Screen
-Recording/Accessibility being unavailable in this shell.
+per `yt-dlp --help`: brave, chrome, chromium, edge, firefox, opera,
+safari, vivaldi, whale. `CookieBrowser` rawValues (safari, chrome,
+firefox, brave, edge) pass straight through, no translation table.
+Applied to both the `-J` fetch and the download. **Hard constraint: this
+app must never build a username/password form or handle Google
+credentials directly — browser cookie extraction is the only auth
+path.** Real cookie extraction needs Full Disk Access (or a browser-
+specific permission prompt) on a real user's machine — surfaces as
+yt-dlp's own error text if missing, nothing special to catch.
 
 **Sleep interval**: `--sleep-interval 5` alone (no `--max-sleep-interval`)
-is valid on its own — verified via `--help` wording ("minimum time to
-sleep **when used along with** --max-sleep-interval") sounding like it
-requires the max flag, but empirically it doesn't; yt-dlp just sleeps
-exactly 5s before each download when only the min/plain form is given.
+works despite `--help`'s wording suggesting the max flag is required —
+verified empirically.
 
-**Version awareness**: `YTDLPService.fetchVersion` runs `yt-dlp --version`
-via a throwaway `ProcessRunner()` (not the shared `runner`), called once
-from `AppViewModel.checkYTDLPVersion()` on launch (`.task` in
-`ContentView`) and again after Settings' "Update yt-dlp" button runs.
-Shown as a small `.caption2`/`.tertiary` footer in the main window
-(`versionFooter`) — deliberately unobtrusive per the spec, not a banner.
-"Update yt-dlp" (in `SettingsView`, self-contained — see below) runs
-`brew upgrade yt-dlp` via `Tool.brew` (`/opt/homebrew/bin/brew`, added to
-`Tools.swift` but *not* part of `missingTools()`/the required-tools check,
-since brew isn't needed for core download/convert). Verified: `brew
-upgrade` on an already-current package exits 0 with "Warning: yt-dlp
-X.Y.Z already installed" — that message is shown directly to the user
-as-is rather than needing special-cased "already up to date" detection.
+**Version awareness**: `YTDLPService.fetchVersion` runs `yt-dlp
+--version` via a throwaway `ProcessRunner()`, called from `AppViewModel.
+checkYTDLPVersion()` on launch and after Settings' "Update yt-dlp".
+Shown as an unobtrusive `.caption2` footer. "Update yt-dlp" runs `brew
+upgrade yt-dlp` via `Tool.brew` — not part of `missingTools()` since
+brew isn't needed for core download/convert.
 
 **`SettingsView` is deliberately self-contained**, not wired to
-`AppViewModel` via `@EnvironmentObject` — it has its own tiny local
-`@State` (`isUpdatingYTDLP`, `updateResult`, `installedVersion`) and spins
-up its own `ProcessRunner()` instances for the version check / brew
-upgrade. This was a deliberate choice to avoid restructuring how
-`ContentView` owns its `@StateObject` (which would mean promoting
-`AppViewModel` to live in `GrabApp` and injecting it into both scenes) —
-lower risk, and Settings' concerns (log visibility, cookies, yt-dlp
-updates) don't actually need anything from the download/convert state.
+`AppViewModel` via `@EnvironmentObject` — its own local `@State` and its
+own `ProcessRunner()` instances for version check / brew upgrade. Avoids
+restructuring `AppViewModel`'s ownership (would mean promoting it to
+`GrabApp` and injecting into both scenes) for concerns (log visibility,
+cookies, yt-dlp updates) that don't need shared state.
 
-**Targeted error handling / actionable alerts**: `YTDLPService.classifyFailure`
-is pure string-matching against *documented, stable* yt-dlp error wording
-("Sign in to confirm you're not a bot...", "Sign in to confirm your age",
-"Private video. Sign in if you've been granted access...", "HTTP Error
-403: Forbidden", "Video unavailable") — verified with hand-constructed
-strings matching yt-dlp's actual known wording (real bot-checks/age-gates
-aren't reliably reproducible in an automated test, so this is the honest
-limit of what could be verified without a genuinely restricted video).
-`ActionableAlert.make(for:)` maps each `YTDLPFailureKind` to a title/
-message/button; `.other` and unrecognized text produce no alert (falls
-back to the existing plain `lastError` text only — this was a deliberate
-choice to avoid a wrong/noisy alert on unrelated failures). Wired into
-both `fetchFormats` (on `-F` failure) and `runDownloadAndConvert` (on
-final download failure, i.e. *after* the 403 auto-retry below has already
-been tried). The alert's "Open Settings" button uses
-`@Environment(\.openSettings)` — macOS 14+ SwiftUI, exactly at deployment
-floor, opens the `Settings` scene programmatically with zero extra plumbing.
+**Targeted error handling / actionable alerts**:
+`YTDLPService.classifyFailure` is pure string-matching against
+documented, stable yt-dlp error wording ("Sign in to confirm you're not
+a bot...", "Sign in to confirm your age", "Private video. Sign in if
+you've been granted access...", "HTTP Error 403: Forbidden", "Video
+unavailable"). `ActionableAlert.make(for:)` maps each
+`YTDLPFailureKind` to a title/message/button; `.other`/unrecognized text
+produces no alert (falls back to plain `lastError` — deliberate, avoids
+a wrong/noisy alert on unrelated failures). Wired into both `fetchFormats`
+and the final download failure (i.e. after the 403 auto-retry below).
+The alert's "Open Settings" button uses `@Environment(\.openSettings)`.
 
-**Automatic 403 retry**: `runDownloadAndConvert` has a local
-`attemptDownload(selector:)` closure (mirrors the `attemptConversion`
-pattern from the hardware-acceleration fallback). First attempt uses
-whatever selector the caller passed (specific format IDs, or
-`YTDLPService.fallbackFormatSelector` = `"bv*+ba/b"` if this *is* already
-a retry/the "Retry with Best-Quality Auto-Select" alert action). If that
-attempt fails with `classifyFailure(...) == .forbidden403` *and* the
-selector wasn't already the fallback one (no infinite retry), it logs the
-retry and calls `attemptDownload` again with `fallbackFormatSelector`.
-Verified for real: the fallback selector alone (`bv*+ba/b`) completes a
-real download successfully; the classification-triggers-retry *decision
-logic* was verified with a synthetic 403-shaped error string (same
-honest-limitation caveat as above — YouTube doesn't 403 on demand for
-testing). `downloadArguments`' signature changed this session from
-`(videoFormatID:audioFormatID:)` to a single `formatSelector: String` —
-this is *the* enabling change for both the retry and the "Retry with
-Best-Quality" alert button, since both need to substitute in a raw
-selector that bypasses the normal per-format video+audio ID composition.
-`AppViewModel.startDownload` still computes that composed selector itself
-before calling the new shared `beginDownload` — so the public call site
-and its behavior for normal (non-retry) downloads is unchanged.
+**Automatic 403 retry**: bounded `repeat`/`while` loop
+(`downloadAttempts` counter, capped at `DownloadEngine.
+maxAttemptsPerPhase` = 2), gated on `!SystemFailureKind.classify(...).
+isFatal`. First attempt uses whatever selector the caller passed; on a
+403 failure (and only if the selector wasn't already the fallback), 
+retries with `YTDLPService.fallbackFormatSelector` = `"bv*+ba/b"`. Both
+the HTTP-403 retry and the hardware→software ffmpeg fallback are
+expressed as explicit bounded loops (not unbounded `if`-triggered
+retries) specifically so no auto-retry mechanism can fire on a fatal
+`SystemFailureKind` (disk-full, permission-denied, missing-binary,
+invalid/corrupt input — all recognized by plain substring match against
+lowercased process output, shared between yt-dlp/ffmpeg since both just
+hit the same OS `write()` errors).
 
-**ProcessRunner**: single class used for every subprocess. Streams
-stdout+stderr via `Pipe.fileHandleForReading.readabilityHandler` (runs off
-the main thread on a GCD queue), collects full output for callers that need
-it (ffprobe JSON), supports `cancel()` via `Process.terminate()`. Reused
-per-operation (one instance per fetch/download/convert call), not shared
-as a singleton, so cancellation only ever affects the currently-running
-step.
+**Fatal-failure alerts**: disk-full/permission-denied failures build a
+dedicated `ActionableAlert` (title/message/"OK", reusing the existing
+`viewModel.actionableAlert` plumbing) instead of the generic "... failed
+(see log)." message. Disk-full includes the drive name
+(`DiskSpaceService.volumeName(at:)`) and, when available, both the
+pre-flight byte estimate and current available space.
 
-`finish()` does a final synchronous `readToEnd()` drain of both pipes
-*after* nilling the `readabilityHandler`, before resuming the continuation.
-This guards against child processes (Python/yt-dlp in particular) that
-fully block-buffer stdout when it isn't a TTY — output flushed right at
-process exit can otherwise race `terminationHandler` and get silently
-dropped since the handler that would have delivered it just got cleared.
-Added this session while chasing what looked like a progress-line-capture
-bug; turned out the real cause was the `--print`/`--progress` interaction
-above, not this — but the drain-on-exit is a real, verified-safe hardening
-(tested: doesn't hang, doesn't double-deliver, doesn't affect any existing
-behavior) and was kept as defense-in-depth for the general "buffered output
-flushed exactly at exit" race, which could in principle affect ffmpeg/
-ffprobe's tail output too, not just yt-dlp's.
+**Pre-flight disk-space check** (`AppViewModel.confirmEnoughDiskSpace`,
+called right before conversion starts): estimates output size via
+`FFmpegService.estimateOutputBytes` (duration × estimated bits-per-second
+from width/height/fps probed off the *downloaded* file) vs.
+`DiskSpaceService.availableBytes(at:)` for the output directory. If the
+estimate exceeds available space: a blocking Continue/Cancel alert
+(`diskSpaceWarning` + `withCheckedContinuation`) before ffmpeg starts.
+Both probes are best-effort — failure silently skips the check, matching
+this app's "probe failure → degrade gracefully" convention. In the
+queue, `JobSink.confirmEnoughDiskSpace` always returns `true` immediately
+(a queue must never pop an interactive dialog mid-batch) — a real
+out-of-space failure still surfaces later as a normal failed-job outcome.
 
-**Result<_, String> doesn't compile** — `String` doesn't conform to
-`Error`. Use `GrabError` (in `Models.swift`, just wraps a `message:
-String`) as the failure type instead. If you see this error again, that's
-why.
+**Output-size estimate is deliberately rough**
+(`FFmpegService.estimatedBitsPerSecond`): ProRes uses Apple's published
+reference rates at 1920×1080/29.97fps (Proxy=45, LT=102, 422=147,
+HQ=220, 4444=330 Mbps), linearly scaled by pixel-count and fps ratios.
+H.264 reuses `H264Quality.hardwareBitrate` flat regardless of
+hardware/software/resolution (libx264's CRF mode doesn't target a fixed
+rate anyway, so any number here is already approximate). Good enough to
+catch "this clearly won't fit," never meant to predict exact size.
 
-**Progress bar mechanics** (`AppViewModel.runDownloadAndConvert`): download
-phase parses each streamed chunk with `YTDLPService.parseDownloadProgress`
-directly (yt-dlp already computes % and ETA, no extra math needed).
-Conversion phase probes total duration once via `FFmpegService.probeDuration`
-before starting ffmpeg (best-effort — failure just means an indeterminate
-bar, non-fatal), then each chunk is parsed with `FFmpegService.
-parseTimeSeconds`/`parseSpeed`; ETA prefers ffmpeg's own reported `speed=`
-multiplier (`remaining_source_seconds / speed`), falling back to a
-wall-clock extrapolation (`elapsed / fraction * (1 - fraction)`, tracked
-from a `Date()` captured when the ffmpeg phase starts) if `speed=` isn't
-present on a given line.
+**`ProcessRunner`**: one instance per operation (fetch/download/convert),
+not a shared singleton, so cancellation only affects the currently-
+running step. Streams stdout+stderr via `Pipe.fileHandleForReading.
+readabilityHandler`. `finish()` does a final synchronous `readToEnd()`
+drain of both pipes *after* nilling the handler, before resuming — guards
+against child processes (Python/yt-dlp) that fully block-buffer stdout
+when it isn't a TTY, where output flushed right at exit can otherwise
+race `terminationHandler` and get dropped. Verified safe (doesn't hang,
+doesn't double-deliver) and kept as defense-in-depth even though the
+progress-capture bug that motivated it turned out to be the `--print`/
+`--progress` interaction above, not this.
 
-**Color info is now probed after *every* successful download**, not just
-when conversion is on — moved out from behind the conversion-mode check
-specifically so the color-indicator badge has something to show even if
-you never convert. If conversion is on (`conversionMode != .none`), the
-already-probed `ColorInfo` is reused for `conversionArguments`/
-`h264ConversionArguments` (no second ffprobe call) — same HDR/SDR
-decision, same ffmpeg args as before this change, just computed once
-instead of conditionally.
+**`Result<_, String>` doesn't compile** — `String` doesn't conform to
+`Error`. Use `GrabError` (wraps a `message: String`) instead.
+
+**Progress bar mechanics**: download phase parses each chunk directly
+with `parseDownloadProgress` (yt-dlp already computes %/ETA). Conversion
+phase probes total duration once via `FFmpegService.probeDuration`
+(best-effort, failure = indeterminate bar), then parses each chunk with
+`parseTimeSeconds`/`parseSpeed`; ETA prefers ffmpeg's own `speed=`
+multiplier, falling back to wall-clock extrapolation if `speed=` isn't
+on a given line.
+
+**Color info is probed after every successful download**, not just when
+converting — the color-indicator badge has something to show even
+without conversion. If conversion is on, the already-probed `ColorInfo`
+is reused (no second ffprobe call).
 
 **Delete-source-after-conversion**: only runs when `convertResult.exitCode
-== 0` (i.e. never deletes the source if conversion failed), deletes
-`inputURL` (the merged download, not the ProRes/H.264 output) via
-`FileManager.default.removeItem`, failure is logged but non-fatal.
+== 0` (never deletes on failed conversion), deletes the merged download
+(not the ProRes/H.264 output), failure logged but non-fatal.
 
-**Notifications** (`NotificationService.swift`): fires once per successful
-run — "Download Complete" if `conversionMode == .none`, "ProRes
-Conversion Complete"/"H.264 Conversion Complete" (`modeName` in
-`runDownloadAndConvert`) if conversion was on and succeeded. No notification on
-failure (deliberate scope decision, not an oversight — extend
-`runDownloadAndConvert`'s failure branches if that's wanted later).
-Authorization is requested once via `.task` in `ContentView`'s root view;
-if the user denies it or `UNUserNotificationCenter` can't register (can
-happen for unsigned/ad-hoc apps not in /Applications), `postCompletion`
-just silently no-ops — never surfaced to the user or the log, and never
-blocks/affects the download pipeline either way.
+**Notifications**: fires once per successful run — "Download Complete"
+or "ProRes/H.264 Conversion Complete." No notification on failure
+(deliberate scope decision). Authorization requested once via `.task`;
+if denied or unavailable (can happen for unsigned/ad-hoc apps outside
+/Applications), `postCompletion` silently no-ops.
+
+**Real bug found in the "Best available" playlist/basic-mode format
+picker**: an early implementation picked the best `avc1` (H.264) format
+from *all* video formats regardless of resolution, so a lower-res H.264
+stream could beat a genuinely higher-res non-H.264 stream — technically
+still "playable" but silently downgraded quality. Fixed by pinning down
+the true best `resolutionPixels` first, then restricting candidates to
+that resolution tier before applying avc1-preference. Caught by a
+harness assertion (1080p-avc1 + 2160p-vp9 mix), not by inspection — see
+"The actually-useful verification method" below.
 
 ## Building / running (no full Xcode.app in /Applications on this machine)
 
-Only Command Line Tools are installed under `/Applications`. There is a
-full **Xcode-beta.app** elsewhere that can build this project without
-touching the global `xcode-select` setting — **its location has already
-moved once** (was `~/Downloads`, then turned up on an external volume at
-`/Volumes/Untitled/Xcode-beta.app`), so don't hardcode a path from an old
-note. Find it fresh each session:
+Only Command Line Tools are installed under `/Applications`. A full
+Xcode-beta.app lives elsewhere and can build this project without
+touching the global `xcode-select` setting — **its location has moved
+before**, so find it fresh each session rather than hardcoding a path:
 
 ```sh
 mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'"
@@ -737,36 +545,40 @@ DEVELOPER_DIR="$(mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'" | he
   -destination 'platform=macOS' build
 ```
 
-`scripts/release.sh` (see "Release & distribution" below) already does
-this Spotlight lookup itself — don't hand-maintain the path there either.
+`scripts/release.sh` does this same Spotlight lookup itself.
 
 Built app lands in DerivedData, e.g.:
 `~/Library/Developer/Xcode/DerivedData/Grab-*/Build/Products/Debug/Grab.app`
 
 **Permission state changes between sessions — always just try, don't
-assume a past note still holds.** As of the round-3 session: Screen
-Recording permission *is* granted (`screencapture` works, and so does
-`Quartz.CGWindowListCopyWindowInfo` for exact window bounds — see the
-window-sizing section above), so real screenshots and visual verification
-are possible and should be used. Accessibility/UI-scripting is still
-*not* granted (`osascript ... tell application "System Events"` fails
-with `-1719`), so buttons/menus can't be clicked programmatically — for
-UI states that require interaction (populated table, post-download
-buttons), temporarily inject mock state directly into the view model
-inside a `.task` or similar, screenshot, then revert before finishing —
-don't leave mock-data injection in the shipped code. If both permissions
-ever show as unavailable again, say so explicitly rather than claiming a
-visual check that didn't happen — but check first each session, don't
-assume.
+assume a past note still holds.** Screen Recording (needed for
+`screencapture`/`Quartz.CGWindowListCopyWindowInfo`) has been available
+in recent sessions. Accessibility/UI-scripting (`osascript ... System
+Events`) has consistently *not* been available, so buttons/menus can't
+be clicked programmatically — for UI states that need interaction,
+temporarily inject mock state directly into the view model inside a
+`.task`, screenshot, then revert before finishing. State that check
+first each session, don't assume either way holds.
+
+**If Bash starts failing with `ENOSPC` on even trivial commands (`true`,
+`df`)**: the disk is genuinely full, not a tool hiccup (this happened
+after a long run of repeated Debug/Release builds plus many
+screenshots). Bash can't run anything at that point, including
+diagnostic/cleanup commands, so there's no way to self-diagnose from
+inside the sandbox — say so plainly and ask the user to free space
+(Xcode's `DerivedData` and this repo's `build/` are the likely
+culprits, both regenerable).
 
 ### The actually-useful verification method
 
-Because `Models.swift`, `Tools.swift`, `ProcessRunner.swift`,
-`YTDLPService.swift`, and `FFmpegService.swift` have zero SwiftUI/AppKit
-imports, they compile standalone with plain `swiftc` (`AppViewModel.swift`
-and `NotificationService.swift` do not — they're SwiftUI/UserNotifications-
-adjacent and MainActor-bound, not part of this harness pattern). To test
-real behavior against the real binaries without the GUI:
+`Models.swift`, `Tools.swift`, `ProcessRunner.swift`, `YTDLPService.swift`,
+`FFmpegService.swift`, `BasicModeService.swift`,
+`PlaylistFormatSelector.swift`, and `DownloadEngine.swift` have zero
+SwiftUI/AppKit imports and compile standalone with plain `swiftc`
+(`AppViewModel.swift`, `AppViewModel+Queue.swift`, and
+`NotificationService.swift` do not — SwiftUI/UserNotifications-adjacent
+and MainActor-bound). To test real behavior against real binaries
+without the GUI:
 
 ```sh
 mkdir -p /tmp/grab_harness && cd /tmp/grab_harness
@@ -777,2113 +589,705 @@ swiftc Models.swift Tools.swift ProcessRunner.swift YTDLPService.swift FFmpegSer
 ./harness
 ```
 
-**Compile without `-O`** (plain `swiftc ...`, no optimization flags).
-`assert()` is compiled out entirely under `-O`, so a harness built with
-`-O` will silently pass even when every assertion is false — this really
-happened once, see conversation history. `-Onone`/default is required for
-assertions to actually run.
+**Compile without `-O`** — `assert()` is compiled out under `-O`, so an
+optimized harness silently passes even when every assertion is false
+(this happened once). Plain `swiftc`/`-Onone` is required for assertions
+to actually run.
 
-To test the "GUI app has no shell PATH" scenario specifically (this is how
-the yt-dlp/ffmpeg PATH bug was originally reproduced and confirmed fixed):
+To reproduce "GUI app has no shell PATH":
 
 ```sh
 env -i PATH=/usr/bin:/bin HOME="$HOME" ./harness
 ```
 
-Use a short, low-res video for fast iteration:
-`https://www.youtube.com/watch?v=jNQXAC9IVRw` ("Me at the zoo", ~19s,
-tops out at 144p — format `160`+`139` is a fast video+audio pair to
-download-and-merge in tests).
+Test video: `https://www.youtube.com/watch?v=jNQXAC9IVRw` ("Me at the
+zoo", ~19s, tops out at 144p, format `160`+`139` is fast to download-
+and-merge).
 
-**When "don't break existing logic" is a hard constraint** (e.g. a UI-only
-or additive-feature request), diff the files you touched against copies
-saved in a previous verified harness run before declaring done — don't
-just trust that your edits were additive by eye. This session caught that
-`ProcessRunner.swift`/`Tools.swift` really were byte-identical, and that
-the diffs in `Models.swift`/`YTDLPService.swift`/`FFmpegService.swift` were
-pure appends (every hunk was an `Na,Mc0`-style pure addition, nothing
-removed/modified), which is what made it safe to conclude the core
-download/convert behavior hadn't regressed.
+**When "don't break existing logic" is a hard constraint**, diff the
+files you touched against a previously-verified copy before declaring
+done — don't just trust edits were additive by eye.
 
 **Diagnosing "output isn't arriving via the pipe" issues**: don't assume
-it's a `ProcessRunner`/buffering bug first. Write a tiny throwaway
-`DebugChunks.swift` (`@main`, prints each `onOutput` chunk with a counter
-via unbuffered `FileHandle.standardError.write`, not `print()` — Swift's
-own `print()` can itself be block-buffered when *this* debug binary's
-stdout is piped, which will fool you into misdiagnosing your own trace
-tool as the bug) and compare against running the *exact* same yt-dlp/ffmpeg
-command line directly in a terminal. That's what surfaced that `--print`
-itself was suppressing progress output — a yt-dlp behavior, not a Swift/
-Process bug — in under a few minutes, instead of chasing a phantom race
-condition in `ProcessRunner`.
-
-## Window chrome translucency
-
-`ContentView`'s root `VStack` has `.background(.regularMaterial)` (added
-after `.padding(12)`/`.frame(...)`, before `.toolbar`). This is the
-*only* change for this — the unified-toolbar titlebar was already
-vibrant/translucent automatically from `.toolbar` being present (see the
-UI architecture section above), so no separate titlebar handling was
-needed. Deliberately just one modifier, no custom `NSVisualEffectView`
-wrapper or hand-rolled blur — the ask was specifically "native SwiftUI/
-AppKit materials... do not hand-roll."
-
-**Content surfaces needed zero changes to stay opaque**: the Formats
-`GroupBox`/`Table`, the `Form(.grouped)` "cards" (Download/Output/
-Conversion sections), and `LogView` (already explicit
-`Color(nsColor: .textBackgroundColor)`, pre-dating this change) all
-render with their own solid system-provided backgrounds regardless of
-the root's material — verified visually, not assumed, in both light and
-dark mode. No content view needed an explicit opaque-background override
-added.
-
-**Live appearance-toggle staleness is a real platform quirk, not a bug
-here**: toggling system Dark/Light mode via System Events while Grab is
-already running updates the titlebar/toolbar chrome and plain semantic-
-`Color`-backed views (e.g. `LogView`) immediately, but `Form(.grouped)`/
-`GroupBox` content lagged behind showing the *old* appearance's colors
-until the app was quit and relaunched fresh under the new appearance —
-at which point everything rendered correctly and consistently. Confirmed
-this is a stale-live-toggle issue, not a real bug, by relaunching fresh
-under each appearance and seeing fully correct, consistent theming both
-times. If asked to debug "some elements didn't restyle after a live
-Dark Mode toggle" in the future, try a relaunch before assuming a real
-bug — this is standard, expected AppKit/SwiftUI material behavior, not
-specific to anything in this app's code.
-
-**Verified**: dark mode content freshly rendered (opaque, correct
-contrast throughout) with a solid near-white test wallpaper behind the
-window — cropped and inspected the titlebar/chrome margin directly and
-confirmed a soft blurred/vibrant texture there (materials tint to the
-*current appearance*, not simply show the literal color of what's behind
-— a dark-mode material over a light wallpaper still renders dark-toned
-with blur, which is correct native behavior, not a bug). Light mode
-verified via a fresh launch: fully consistent light theming, table/cards/
-log all opaque and legible. Did **not** get a clean light-vs-dark-
-*wallpaper* comparison — see the note below about the test wallpaper.
-
-**Test wallpaper note**: while testing this, the desktop picture was
-changed via `osascript`/System Events to a solid test color to make the
-material's blur visible against a known backdrop. The user's original
-wallpaper was a dynamic/Aerial (live) wallpaper — confirmed via
-`~/Library/Application Support/com.apple.wallpaper/Store/Index.plist`,
-where the still-intact "Idle" config for the display uses
-`com.apple.wallpaper.choice.aerials` — and AppleScript's `picture of
-desktop` API can only get/set *static* images, so it could not be
-restored the same way it was changed. **Don't change desktop wallpaper
-via script again without asking first** — this should have been asked
-before the first change, not after. The user opted to reset it
-themselves via System Settings rather than have it guessed back.
+a `ProcessRunner` buffering bug first. Write a throwaway `DebugChunks.swift`
+(`@main`, prints each chunk via unbuffered `FileHandle.standardError.write`,
+not `print()` — Swift's own `print()` can itself be block-buffered when
+piped) and compare against running the exact same command directly in a
+terminal. That's what surfaced the `--print`-suppresses-progress behavior
+above, in minutes, instead of chasing a phantom race in `ProcessRunner`.
 
 ## Dependency checking / first-run setup screen
 
-**Two separate, deliberately non-unified mechanisms both check for missing
-tools** — don't try to merge them:
+**Two separate, deliberately non-unified mechanisms both check for
+missing tools** — don't merge them:
 
-1. **`Tool.missingTools()`** (`Tools.swift`) — the pre-existing runtime
-   check, used by `AppViewModel` right before `fetchFormats`/`beginDownload`
-   to show the `missingToolAlert` sheet if yt-dlp/ffmpeg/ffprobe aren't
-   there. Scoped to exactly the binaries Grab itself calls via
-   `ProcessRunner.run(path:...)` — this is "graceful failure at the moment
-   of use."
+1. **`Tool.missingTools()`** (`Tools.swift`) — runtime check used right
+   before `fetchFormats`/`beginDownload` to show the missing-tool alert.
+   Scoped to exactly the binaries Grab calls directly.
 2. **`DependencyService`/`DependencyKind`** (`Dependencies.swift`) — the
-   richer model for the first-run setup screen, covering all five
-   dependencies (Homebrew, yt-dlp, ffmpeg, ffprobe, deno) with versions,
-   Homebrew-formula mapping, and install helpers. `deno` is **only** in
-   this model, never in `Tool.missingTools()` — Grab never spawns `deno`
-   itself (yt-dlp shells out to it internally for YouTube's JS playback
-   challenges), so there's no `ProcessRunner.run(path: Tool.deno, ...)`
-   call site that could naturally intercept a "deno is missing" runtime
-   failure the way there is for yt-dlp/ffmpeg/ffprobe. Both models read
-   from the same underlying source of truth, though — `DependencyKind.
-   resolvedPath` just reads `Tool.ytdlp`/`.ffmpeg`/etc., so path resolution
-   itself is never duplicated, only the presentation layer is.
-
-**Path resolution** (`Tool.searchPrefixes`): `/opt/homebrew/bin` (Apple
-Silicon) → `/usr/local/bin` (Intel) → `/usr/bin` (third fallback, per an
-explicit spec requirement — no dependency binary is expected to actually
-live here in practice, but the search checks it anyway). First match per
-tool wins, resolved once per launch via `static let`. `ProcessRunner`'s
-injected `PATH` and `YTDLPService`'s `--ffmpeg-location` both prepend/read
-from this same list — see "Dual-arch Homebrew support" above, unchanged by
-this session's work other than adding the third prefix and `Tool.deno`.
+   richer first-run-setup model, covering all five dependencies
+   (Homebrew, yt-dlp, ffmpeg, ffprobe, deno) with versions/formula
+   mapping/install helpers. `deno` is only here — Grab never spawns it
+   directly (yt-dlp shells out to it internally), so there's no runtime
+   call site to naturally intercept a missing-deno failure. Both models
+   read the same underlying `Tool.*` path resolution.
 
 **The setup sheet is one combined screen** (`DependencySetupView`) —
-dependency list + Homebrew-missing callout / install-missing-tools button
-+ disclaimers + "I understand" checkbox — not split into multiple sheets.
-Deliberate: re-triggering it later (a tool went missing, or Debug → "Show
-first-run setup screen") should always show the full picture, not a
-partial one. Two separate `@AppStorage` flags gate it:
-`hasCompletedOnboarding` (true once the user has clicked Continue at least
-once ever) and `hasAcknowledgedDisclaimer` (true once the checkbox has
-been ticked and Continue clicked — also what the checkbox binds to
-directly, so if the sheet re-appears later for a missing-tool reason only,
-it shows already-checked and Continue is immediately clickable). Shown at
-launch when `!hasCompletedOnboarding || !dependencySetup.missingRequired.
-isEmpty` — i.e. every launch re-checks dependencies regardless of
-onboarding history, so a tool that gets uninstalled later still triggers
-the sheet again.
+list + Homebrew-missing callout + install button + disclaimers +
+"I understand" checkbox, not split into multiple sheets, so re-triggering
+later always shows the full picture. Gated by `hasCompletedOnboarding`
+and `hasAcknowledgedDisclaimer` (`@AppStorage`); shown at launch when
+`!hasCompletedOnboarding || !dependencySetup.missingRequired.isEmpty` —
+every launch re-checks regardless of onboarding history.
+`debugForceShowSetupScreen` (shared key between ContentView/SettingsView,
+same pattern as `cookiesFromBrowser`) is Settings' fire-once debug
+trigger — set true, `ContentView`'s `.onChange` shows the sheet and
+immediately resets it to false.
 
-**Cross-scene debug trigger**: `debugForceShowSetupScreen` (`@AppStorage`,
-declared independently in both `ContentView` and `SettingsView`, same
-key) — the established pattern this codebase already uses for
-`cookiesFromBrowser`/`showLogPanel` (no `@EnvironmentObject` bridges the
-Window and Settings scenes). Settings' Debug section sets it `true`;
-`ContentView`'s `.onChange` catches the flip, shows the sheet, and
-immediately resets the flag back to `false` — a fire-once signal via a
-persisted bool, not a real toggle.
+**Gotcha**: `DependencySetupView`'s inner `ScrollView` did not start
+scrolled to the top on first appearance (opened ~200pt down, showing
+only the tail of the deno row). Fixed with `.defaultScrollAnchor(.top)`
+(macOS 14+). Apply this preemptively to any future `ScrollView` inside a
+`.sheet` rather than assuming top-anchoring is the default.
 
-**Real bug found and fixed this session**: the setup sheet's inner
-`ScrollView` did not start scrolled to the top on first appearance — it
-opened already scrolled ~200pt down, past the "Dependencies" heading and
-the first four rows (Homebrew/yt-dlp/ffmpeg/ffprobe), showing only the
-tail of the `deno` row. Verified this was a pure scroll-position bug, not
-missing content, by temporarily blowing out the sheet's frame height
-(660 → 1200) with no `ScrollView` needed — all 5 rows rendered correctly.
-Root cause not fully identified (no `ScrollViewReader`/`scrollTo` call
-exists anywhere in this view to explain it), but `.defaultScrollAnchor
-(.top)` on the `ScrollView` (macOS 14+ API, at the deployment floor)
-fixed it outright — verified visually after the fix, all 5 rows visible
-immediately on open. If any other `ScrollView` in this app is ever added
-inside a `.sheet`, apply `.defaultScrollAnchor(.top)` preemptively rather
-than assuming the default is already top-anchored.
-
-**Verification method for the missing-tools/Homebrew-missing UI states**:
-same mock-injection-then-revert pattern as the round-3 window-sizing work
-(see "Verification method for this class of bug" above), but with an
-added wrinkle — `DependencySetupView`'s own `.task { await viewModel.
-refresh() }` re-fetches real statuses immediately after the sheet
-appears, silently overwriting a mock injected only in `ContentView`'s
-`.task`. Had to temporarily comment out that inner `.task` too, for the
-duration of the mock-state screenshot, then restore both. If you ever
-need to visually verify sheet content driven by a `ViewModel` that
-independently self-refreshes on `.task`, check for and neutralize that
-inner refresh too — otherwise the mock silently never renders and looks
-like a "missing rows" bug (which is exactly what it looked like here at
-first, before the real cause — see the scroll-anchor paragraph above,
-which was investigated using the *same* symptom before being separated
-out as a distinct issue).
-
-**Terminal handoff for the Homebrew installer**
-(`DependencySetupViewModel.installHomebrewInTerminal`): builds a `tell
-application "Terminal" to do script "..."` AppleScript, manually escaping
-backslashes then double-quotes in the command string before embedding it.
-Verified for real with a harmless substitute command containing nested
-quotes (not the actual Homebrew installer, since it's already installed
-on this dev machine and there's no reason to re-run it) — Terminal opened
-a new window and executed the command with quoting intact. First use of
-this on a real user's machine will trigger a one-time Apple Events
-automation permission prompt for controlling Terminal.app — expected,
-same category as the notification-permission and Screen Recording
-prompts elsewhere in this app, not something to catch/handle specially.
-
-**Not verified visually**: the Settings window's new Debug section
-(`SettingsView`, "Show first-run setup screen" / "Reset first-run state"
-buttons) — Accessibility/UI-scripting is still unavailable in this shell
-(`osascript ... System Events` → `-1719`/`1002`, consistent with every
-prior session's note), and there's no mock-injection angle for a
-different *scene* the way there is for `ContentView`'s sheet. It's built
-from the same `Section`/`Button`/`Form` primitives as the adjacent,
-already-verified "Update yt-dlp" section, so risk is low, but say so
-explicitly rather than implying it was screenshotted — consistent with
-this file's standing rule on that.
+**Mock-verification gotcha for this sheet specifically**:
+`DependencySetupView`'s own `.task { await viewModel.refresh() }`
+re-fetches real statuses immediately on appear, silently overwriting a
+mock injected only in `ContentView`'s `.task` — that inner refresh has
+to be temporarily neutralized too, or the mock never renders (looks
+exactly like a "missing rows" bug, which is what the scroll-anchor issue
+above looked like too, before being separated out as a distinct cause).
 
 ## Update checking
 
-**yt-dlp's own version check only** — fires from `ContentView`'s launch
-`.task` via `AppViewModel.checkForUpdates()`, a `Task` that's never
-awaited so a slow/offline network can't delay launch. Renders as a
-dismissible banner (`updateBannersSection` in `ContentView.swift`, above
-the Formats section) and is session-only state
-(`AppViewModel.ytdlpUpdateInfo`, not `@AppStorage`) — dismissing just
-sets the published value back to nil; a fresh launch re-checks and
-re-shows if still applicable, which is the point of a version nag.
+**yt-dlp's own version check only** (`AppViewModel.checkForUpdates()`,
+fired unwaited from `ContentView`'s launch `.task` so a slow/offline
+network can't delay launch). Renders as a dismissible session-only
+banner (`ytdlpUpdateInfo`, not `@AppStorage` — dismissing just clears it,
+a fresh launch re-checks). App-update checking (a separate GitHub-
+Releases-API poller, `AppUpdateService`) is gone entirely, replaced by
+Sparkle (see below) — deleted rather than kept alongside it.
 
-App-update checking used to live here too (a second independent check,
-`AppUpdateService`, polling the GitHub Releases API and showing a second
-banner linking to the release page) — **that's gone entirely, replaced by
-Sparkle**. See "Auto-updates (Sparkle)" below; this section is yt-dlp-only
-now, and `AppUpdateService.swift`/`AppUpdateInfo`/`VersionCompare` were
-deleted outright rather than kept alongside Sparkle, since Sparkle fully
-subsumes what they did (and does it better — actual in-app install, not
-just a link to the release page).
-
-**yt-dlp update check** (`YTDLPService.checkForUpdate`): runs `brew
-outdated --json=v2 yt-dlp`. Verified the real JSON schema directly against
-this machine's Homebrew rather than assumed from docs — `{"formulae":
-[{"name", "installed_versions": [...], "current_version"}], "casks": []}`,
-empty `formulae` array when up to date. Homebrew sometimes prints a
-progress line ("checking for JSON API...") before the JSON body depending
-on cache state, so parsing finds the first `{` rather than assuming the
-whole captured stdout+stderr is pure JSON. Silent-on-failure throughout
-(brew missing, yt-dlp not installed, unparseable output all just return
-nil) — this is a best-effort launch check, never worth surfacing an error
-for. The banner's "Update" button calls `AppViewModel.
-updateYTDLPFromBanner()`, which runs `brew upgrade yt-dlp` — a separate
-method from `SettingsView`'s own identical-in-spirit update button rather
-than a shared call, because `SettingsView` is deliberately self-contained/
-not wired to `AppViewModel` (see that note further up this file). None of
-this changed when Sparkle was added — it's a completely separate check
-from app-update checking and always has been.
+`YTDLPService.checkForUpdate` runs `brew outdated --json=v2 yt-dlp`.
+Real schema: `{"formulae": [{"name", "installed_versions": [...],
+"current_version"}], "casks": []}`, empty `formulae` when up to date.
+Homebrew sometimes prints a progress line before the JSON body, so
+parsing finds the first `{` rather than assuming pure JSON. Silent-on-
+failure throughout (brew/yt-dlp missing, unparseable output all return
+nil) — a best-effort launch check, never worth surfacing an error for.
+The banner's "Update" button and Settings' own update button call
+separate methods (not shared) since `SettingsView` is deliberately
+self-contained.
 
 ## Auto-updates (Sparkle)
 
-Grab ships with [Sparkle](https://sparkle-project.org) (added via Swift
-Package Manager, `project.yml`'s `packages:`/target `dependencies:`) for
-real in-app auto-updates — checks in the background, shows release notes,
-downloads, verifies, and installs over the running app, replacing the old
-`AppUpdateService` GitHub-API-polling-plus-a-link approach described
-above. This is a genuine behavior change from the "deliberately does not
-self-update" decision an earlier session made (see this file's git
-history if curious) — revisited and reversed at explicit user request
-this session, not a reversal made casually.
+Added via SPM for real in-app auto-updates (checks in the background,
+shows release notes, downloads, verifies, installs over the running
+app) — a deliberate reversal of an earlier "does not self-update"
+decision, made at explicit user request.
 
-**Wiring** (`GrabApp.swift`): a `private let updaterController =
-SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil,
-userDriverDelegate: nil)` on the `App` struct itself — it has to live for
-the whole app lifetime and has nothing to do with the download/convert
-pipeline, so it doesn't belong on `AppViewModel`. `startingUpdater: true`
-starts Sparkle's own background scheduler immediately; this *is* the
-"check for updates automatically on launch, non-blocking" behavior — it's
-a plain background network fetch against `SUFeedURL` that Sparkle manages
-entirely on its own (interval governed by `SUEnableAutomaticChecks`/
-`SUScheduledCheckInterval`, the latter left at Sparkle's own default since
-nothing in the spec asked for a custom interval), and it only ever
-surfaces UI if an update is actually found. `.commands { CommandGroup(after:
-.appInfo) { CheckForUpdatesView(updater: updaterController.updater) } }`
-adds the manual "Check for Updates…" item to the app menu, right after
-"About Grab" — Sparkle's own recommended placement.
+**Wiring**: `GrabApp.swift` owns `updaterController =
+SPUStandardUpdaterController(startingUpdater: true, ...)` for the whole
+app lifetime (unrelated to the download/convert pipeline, so it doesn't
+belong on `AppViewModel`). `startingUpdater: true` starts Sparkle's own
+background scheduler — a plain background fetch against `SUFeedURL`,
+interval governed by Sparkle's own defaults, only surfacing UI if an
+update is found. `.commands { CommandGroup(after: .appInfo) {
+CheckForUpdatesView(...) } }` adds the manual "Check for Updates…" item.
+`CheckForUpdatesView.swift` bridges `SPUUpdater.canCheckForUpdates`
+(plain KVO, not natively `@Published`) via a tiny
+`CheckForUpdatesViewModel` using `.publisher(for:).assign(to:)`. Both
+the manual and automatic paths converge on Sparkle's own standard UI —
+no custom update UI anywhere in this app.
 
-**`CheckForUpdatesView.swift`** (new file): Sparkle's own documented
-SwiftUI pattern, copied close to verbatim — `SPUUpdater.canCheckForUpdates`
-is a plain KVO-observable property (not natively `@Published`-compatible),
-so a tiny `CheckForUpdatesViewModel: ObservableObject` bridges it via
-`updater.publisher(for: \.canCheckForUpdates).assign(to: &$canCheckForUpdates)`,
-and the view just disables the button while a check/download is already
-in flight. Calling `updater.checkForUpdates()` (the manual path) and
-Sparkle's own automatic background check both converge on the exact same
-standard Sparkle UI once an update is found — release notes, download/
-install prompt — so there's no custom update UI anywhere in this app,
-per the spec ask to "use Sparkle's standard update UI."
-
-**Info.plist keys** (`project.yml`'s `info.properties`, regenerated into
-`Grab/Resources/Info.plist` by `xcodegen generate` same as every other
-Info.plist key in this project):
+**Info.plist keys** (`project.yml`'s `info.properties`):
 - `SUFeedURL`: `https://raw.githubusercontent.com/Tz4i/grab/main/appcast.xml`
-  — the appcast is hosted straight out of this repo (see `appcast.xml`
-  below), not a separate GitHub Pages site or CDN.
-- `SUPublicEDKey`: `r9ZTX9SsJmwHkuDDusEVcz9zLD7hfVdKHehSdG1JBBc=` — see
-  the keypair section immediately below for where the matching private
-  key lives.
-- `SUEnableAutomaticChecks`: `true`.
+- `SUPublicEDKey`: `r9ZTX9SsJmwHkuDDusEVcz9zLD7hfVdKHehSdG1JBBc=`
+- `SUEnableAutomaticChecks`: `true`
 
-**The EdDSA signing keypair — generated for real this session, not a
-placeholder**: `sparkle-tools/bin/generate_keys` (extracted from the
-official `Sparkle-2.9.4.tar.xz` release asset — the plain SPM package
-doesn't ship these CLI tools, only the framework binary) was run with no
-arguments, which is the *recommended* mode: it generates the key and
-stores the private half directly in this Mac's **login Keychain**,
-account `ed25519`, item name "Private key for signing Sparkle updates"
-(confirmed via `security find-generic-password -s
-"https://sparkle-project.org"` — real output, real keychain item, not
-assumed). **The private key is never written to disk as a file at all**
-in this flow — there's nothing to `.gitignore` for it and nothing that
-could accidentally get committed, which is *why* this mode was chosen
-over `generate_keys -f <file>` (file-export mode exists mainly for CI
-systems that can't use a Keychain, which doesn't apply here since
-`scripts/release.sh` is run locally by hand). **This means the private
-key lives only on whichever Mac ran `generate_keys` — if release-signing
-ever needs to happen from a different machine, export it explicitly with
-`generate_keys -x <file>` on this machine, transfer that file over a
-trusted channel, import it with `generate_keys -f <file>` on the new
-machine, and then delete the exported file immediately — don't let it
-sit anywhere as a plain file longer than the transfer itself, and never
-commit it.** `sign_update`/`generate_appcast` both read the private key
-from the Keychain automatically (same default account, `ed25519`) with
-no arguments needed — that's why `scripts/release.sh` never references
-a key file or a secret env var anywhere.
+**The EdDSA signing keypair**: generated via Sparkle's `generate_keys`
+(from the `Sparkle-2.9.4.tar.xz` release asset's `bin/` — the plain SPM
+package doesn't ship these CLI tools) with no arguments, which stores
+the private half in **this Mac's login Keychain** (account `ed25519`,
+item "Private key for signing Sparkle updates") rather than as a file —
+nothing to `.gitignore`, nothing that could get committed by accident.
+**This means the private key only exists on whichever Mac ran
+`generate_keys`.** To sign from a different machine: `generate_keys -x
+<file>` here, transfer over a trusted channel, `generate_keys -f <file>`
+there, then delete the exported file immediately — never let it sit as
+a plain file, never commit it. `sign_update`/`generate_appcast` read the
+Keychain automatically with no arguments, which is why `release.sh`
+never references a key file or secret env var.
 
-**`appcast.xml`** (repo root): a small, hand-structured RSS/Sparkle feed
-— see the file's own header comment. Deliberately *not* generated via
-Sparkle's own `generate_appcast` tool (which wants a whole directory of
-historical DMGs to scan) — this repo doesn't keep old DMGs around
-locally (`build/` is gitignored and wiped by every `release.sh` run), so
-`scripts/update_appcast.py` instead does a small textual insert/replace
-of a single `<item>` block into the existing (already-committed)
-`appcast.xml`, keyed on `<sparkle:shortVersionString>`, re-running safely
-(replaces rather than duplicates an entry for the same version). Plain
-text/regex editing rather than parsing into `xml.etree` and
-re-serializing was a deliberate choice, not laziness — `ElementTree`'s
-namespace-prefix serialization is finicky enough (verified by hitting
-exactly this while first drafting the approach) that it risked reordering
-attributes and producing large, unreviewable diffs on every release, for
-a file that's supposed to have an exactly-one-new-`<item>` diff each time.
+**`appcast.xml`** (repo root): hand-structured, not generated via
+Sparkle's own `generate_appcast` (which wants a directory of historical
+DMGs this repo doesn't keep — `build/` is gitignored and wiped every
+release). `scripts/update_appcast.py` does a textual insert/replace of
+one `<item>`, keyed on `<sparkle:shortVersionString>` (replaces rather
+than duplicates on re-run for the same version) — plain text/regex
+rather than `xml.etree`, deliberately, since `ElementTree`'s namespace-
+prefix serialization risks reordering attributes and producing large,
+unreviewable diffs for a file that should have an exactly-one-`<item>`
+diff each release.
 
-**`CURRENT_PROJECT_VERSION` had to stop being hardcoded `"1"`**: it had
-been a permanent placeholder since this project's very first commit
-(nothing ever compared `CFBundleVersion` before now — see "Versioning"
-below), but Sparkle's default version comparator uses exactly that field
-(via the appcast's `<sparkle:version>`) to decide whether an appcast
-entry is actually newer than the running build. A `CFBundleVersion` that
-never changes means Sparkle could never detect *any* update, no matter
-how the appcast looked. Fixed by setting `CURRENT_PROJECT_VERSION` equal
-to `MARKETING_VERSION` (both `"1.3.0"` as of this session) instead of a
-separate hardcoded string — the two must be bumped together at every
-release from now on; `scripts/update_appcast.py` and `scripts/
-release.sh`'s `sparkle:version`/`sparkle:shortVersionString` both derive
-from `MARKETING_VERSION` alone, so keeping `CURRENT_PROJECT_VERSION` in
-lockstep with it in `project.yml` at bump time is the one manual habit
-this adds to the existing "Versioning" workflow.
+**`CURRENT_PROJECT_VERSION` must be bumped in lockstep with
+`MARKETING_VERSION` at every release** — it had been a permanent
+hardcoded `"1"` placeholder since day one (nothing ever compared
+`CFBundleVersion` before Sparkle existed), but Sparkle's default
+comparator relies on it actually changing via the appcast's
+`<sparkle:version>`. `CFBundleShortVersionString`/`CFBundleVersion` in
+Info.plist are `$(MARKETING_VERSION)`/`$(CURRENT_PROJECT_VERSION)` —
+Xcode substitutes these into the static Info.plist at build time.
 
-**`scripts/release.sh` changes**: after packaging the DMG (unchanged
-steps), it now downloads Sparkle's `bin/sign_update` (and `bin/
-generate_keys`, for convenience/future key rotation) from the pinned
-`Sparkle-2.9.4.tar.xz` release asset into a gitignored `.sparkle-tools/
-2.9.4/` cache directory — downloaded once, reused on every subsequent
-run (verified for real: a cache-hit run correctly skips the download
-entirely). The downloaded tools get `/usr/bin/xattr -rc`'d (Gatekeeper-
-quarantined, same as any curl'd binary — explicitly `/usr/bin/xattr`,
-not a possibly-pip-shadowed one, per this file's existing Gatekeeper
-note further down). `sign_update` then signs the actual packaged DMG
-(reading the private key from the Keychain automatically, nothing passed
-on the command line), its stdout (`sparkle:edSignature="..."
-length="..."`) is parsed with `sed`, and `scripts/update_appcast.py` is
-called with the version, the GitHub release asset URL (`https://github.com/
-Tz4i/grab/releases/download/v$version/Grab-$version.dmg` — same tag/
-filename convention `gh release create` already uses), the signature,
-the length, and today's date. `appcast.xml` is then `git add`ed,
-committed (`Update appcast for v$version`), and pushed — skipped
-gracefully if nothing actually changed (re-running after a partial
-failure won't produce an empty commit).
+**`scripts/release.sh`**: after packaging the DMG, downloads Sparkle's
+`bin/sign_update` (and `bin/generate_keys`) from the pinned tarball into
+a gitignored `.sparkle-tools/2.9.4/` cache (downloaded once, reused
+after). Downloaded tools get `/usr/bin/xattr -rc`'d (explicitly the real
+binary — see the Gatekeeper note under "Release & distribution" below
+about a pip-shadowed `xattr` on this machine). `sign_update` signs the
+DMG (Keychain-backed, nothing on the command line); its
+`sparkle:edSignature="..." length="..."` output is parsed and passed to
+`update_appcast.py` along with the version, GitHub release asset URL,
+and today's date. `appcast.xml` is committed and pushed — skipped
+gracefully if nothing changed.
 
-**Ordering caveat, printed by the script itself so it isn't forgotten**:
-per explicit instruction, `scripts/release.sh` still does *not* do the
-version-bump step (still a separate manual `project.yml` edit + commit
-beforehand, same as always) or `git tag`/`gh release create` (still
-separate manual steps run right after). This means `appcast.xml` gets
-pushed pointing at a GitHub release asset URL that doesn't exist *yet* —
-the feed will 404 for that specific URL until `gh release create`
-actually uploads the DMG. The script prints an explicit reminder of the
-exact next two commands to run for this reason; don't let a real gap
-open up between running `release.sh` and finishing the release, same as
-this file's existing "commit gap" caution elsewhere just applied to a
-shorter window.
+**Ordering caveat**: `release.sh` still does *not* bump the version or
+run `git tag`/`gh release create` — those stay separate manual steps
+(see the "How to release" checklist below). This means the pushed
+`appcast.xml` points at a release asset URL that doesn't exist yet until
+`gh release create` runs — the script prints an explicit reminder of
+the next two commands for this reason. Don't let a real gap open up
+here.
 
-**Verified for real, piece by piece** (the full script was *not* run
-end-to-end for an actual new release as part of this session — see
-below for why): `generate_keys` was actually run, producing the real
-public key above and a real, confirmed Keychain item for the private
-half. `sign_update` was actually run against the real, already-published
-`build/Grab-1.3.0.dmg` (the exact file uploaded as this repo's v1.3.0
-GitHub release asset), producing a real signature — then independently
-re-verified with `sign_update --verify <file> <signature>` (silent exit
-0 on success), confirming the signature is genuinely valid, not just
-"a string that looks like one." `scripts/update_appcast.py` was tested
-against a scratch copy of `appcast.xml`: correctly inserts a new item
-above the existing one, and correctly *replaces* (not duplicates) an
-entry when re-run for a version that's already present — both outcomes
-confirmed by reading the resulting file and re-parsing it as XML
-(`xml.dom.minidom.parse`, catches malformed output the same way a real
-Sparkle client's XML parser would reject it). The `.sparkle-tools`
-download-and-cache block from `release.sh` was extracted and run for
-real (not simulated) against this repo's actual `.sparkle-tools/`
-directory — confirmed it downloads and extracts on a cache miss, and
-confirmed a second run correctly detects the cache hit and skips
-re-downloading. A full `xcodebuild` of the Debug configuration succeeded
-with Sparkle linked (`Contents/Frameworks/Sparkle.framework` present in
-the real built `.app`, not just "should be there"), and the app launched
-and ran without crashing.
+**Not verified end-to-end**: a real older Sparkle-enabled build actually
+detecting and installing an update through Sparkle's UI, live on screen
+— every release so far has been checked via the feed/asset URLs being
+live and correctly signed (`curl`), not by watching a running older Grab
+auto-update. Also not clicked through the actual menu bar — confirmed
+instead via successful compilation/linking against the real `Sparkle`
+module and a crash-free launch.
 
-**Not verified visually**: clicking "Check for Updates…" through the
-actual menu bar, or seeing Sparkle's real update-available UI on screen
-— Accessibility/UI-scripting is still unavailable in this shell
-(`osascript ... System Events` → `-1719`, and a raw `CGEvent`-based
-synthetic click at the menu bar's coordinates was also tried as a
-fallback and didn't open the menu either), consistent with every prior
-session's note in this file. Say so if asked, don't imply it was
-clicked — the menu item's presence and correct wiring were confirmed via
-successful compilation/linking against the real `Sparkle` module (a
-typo or wrong API here would be a build failure, not a silent bug) and a
-crash-free launch, not a screenshot of the open menu. The full release
-workflow (a real version bump, a real `release.sh` run against that new
-version, a real `gh release create`, and then a real running older build
-actually detecting and installing that update through Sparkle's UI) was
-also not exercised end-to-end this session — doing so means publishing a
-real new GitHub release, which wasn't asked for as part of "integrate
-Sparkle"; the pieces it's built from were each verified independently as
-described above. The next real release run through `scripts/release.sh`
-will be the first true end-to-end exercise of this whole pipeline.
+## Log buffer capping/throttling
 
-## Log buffer capping/throttling (fixing "log breaks the UI")
+**Bug** (fixed): opening "Show details" mid-job used to make the log
+pane consume the whole window — `LogView`'s `ScrollView` had
+`.frame(minHeight: 160)` with no `maxHeight`, so SwiftUI measured full
+content height (ffmpeg emits a `frame=...` line per progress tick,
+thousands of lines on a long encode) and sized the window to fit all of
+it. Fixed with `.frame(minHeight: 160, maxHeight: 320)` — same class of
+bug as the window-sizing gotchas above; check for a missing `maxHeight`
+before assuming a new bug if a view "takes over" a window.
 
-**Bug**: opening the "Show details" disclosure mid-job used to make the log
-pane consume the entire window, pushing the rest of the UI out of reach
-with no way to scroll back to it. Root cause was the exact same SwiftUI
-quirk already documented in "Window sizing (round 3)" above for the
-formats `Table`: `LogView`'s `ScrollView` had `.frame(minHeight: 160)`
-with **no `maxHeight`**, so during the window's ideal-size computation
-SwiftUI just measured the full content height (ffmpeg emits a `frame=...`
-status line per progress tick — thousands of lines on a long encode) and
-sized the window to fit all of it. Fix is the same pattern as before: a
-real, finite `maxHeight` — `LogView(...).frame(minHeight: 160, maxHeight:
-320)` in `ContentView.statusSection`. If you ever see a SwiftUI view
-"take over" a window regardless of its content, check for a missing
-`maxHeight` before assuming it's a new bug — this is the second time this
-exact shape of issue has hit this codebase.
+**`LogBuffer`** (`LogBuffer.swift`, pure Swift/Foundation, line-oriented,
+harness-tested): caps at 500 complete lines (oldest dropped first, not a
+character cap — a long encode can produce hundreds of thousands of
+characters within 500 lines of frame-progress spam). Collapses
+consecutive `frame=...`-prefixed lines into one overwritten "current
+progress" line instead of appending each as a new row — eliminates most
+log volume on a real encode. Handles partial lines correctly (a
+`readabilityHandler` chunk can split a line across two `feed()` calls;
+the trailing incomplete segment is held in `partialLine` until a `\n`
+completes it, but `.text` still shows the live partial line).
 
-**Buffer capping + progress-line collapsing** (`LogBuffer.swift`, new this
-session): `AppViewModel` used to hold `log` as a plain `String`, appended
-to directly and capped only by total character count (200_000). Replaced
-with `LogBuffer`, a pure-Swift (Foundation-only, no SwiftUI) line-oriented
-buffer:
-- Caps at 500 *complete lines* (oldest dropped first), not characters —
-  a long ffmpeg encode could still produce hundreds of thousands of
-  characters within 500 lines' worth of frame-progress spam, so a char
-  cap alone doesn't bound line count the way the UI needs.
-- Collapses consecutive `frame=...`-prefixed lines (ffmpeg's periodic
-  status line) into a single overwritten "current progress" line instead
-  of appending each one as a new row — this alone eliminates the vast
-  majority of log volume on a real encode.
-- Handles partial lines correctly: `Pipe.readabilityHandler` delivers
-  arbitrary byte chunks, not line-buffered text, so a single line can
-  arrive split across two `feed()` calls. `LogBuffer` holds the trailing
-  incomplete segment in `partialLine` and only applies capping/collapsing
-  once a `\n` completes it; `.text` still includes the live partial line
-  so nothing is hidden while streaming.
-- Harness-tested (see "The actually-useful verification method" above):
-  3000 synthetic `frame=` lines collapse to exactly one line, 10,000
-  plain lines cap at the newest 500, and a line deliberately split across
-  two `feed()` calls reassembles correctly.
+**Throttled `@Published log`**: `appendLog` feeds `LogBuffer`
+immediately but republishes the `log` string (triggering `LogView`'s
+re-render) at most once per 150ms while chunks keep arriving (a `Task`
+guarded by `logFlushPending`), not on every single pipe chunk.
+`flushLogNow()` forces an immediate flush right before
+`isFetchingFormats`/`isRunning` flip back to false, so the final log
+state appears exactly when the spinner disappears.
 
-**Throttled `@Published log`** (`AppViewModel.appendLog`/
-`scheduleLogFlush`): `appendLog` feeds `LogBuffer` immediately but only
-republishes the `@Published log` string (which triggers `LogView`'s
-`Text` to re-render) on a leading-edge-then-periodic basis — at most once
-per 150ms while chunks keep arriving, via a `Task { @MainActor in ...
-Task.sleep(150ms) ... }` guarded by a `logFlushPending` bool so overlapping
-schedules can't stack up. Previously every single pipe chunk triggered a
-full SwiftUI re-render of the log `Text` view, even though most of that
-volume was the same repeated `frame=` line. `flushLogNow()` (called right
-before `isFetchingFormats`/`isRunning` flip back to false) forces an
-immediate flush so the final log state appears exactly when the
-progress/spinner disappears, rather than up to 150ms later.
+## Retry safety / disk-space handling
 
-**Verified visually**: injected 3000 synthetic `frame=...` lines directly
-into `viewModel.log` (bypassing `LogBuffer` on purpose, to reproduce the
-pre-fix "raw high-volume log" shape) via the same temporary
-mock-injection-in-`.task` pattern used elsewhere in this file, with the
-disclosure forced open and a fake in-progress conversion state. Queried
-real window bounds via `Quartz.CGWindowListCopyWindowInfo` (same method
-as the round-3 window-sizing work) — 1202×1140, a sane bounded size, with
-the log confined to its own scrollable pane and the toolbar/Download/
-Output/Conversion sections/progress bar all simultaneously visible above
-it. Reverted the injection before considering the work done.
-
-## Retry safety / disk-space handling (fixing the disk-full retry issue)
-
-**`SystemFailureKind`** (`Models.swift`, new this session): recognizes
-OS-level fatal failures — disk-full (`"no space left on device"`),
-permission-denied (`"permission denied"`), missing-binary (`"required
-tool not found"` / `"failed to launch"`, matching `ProcessRunner`'s own
-error-message wording), and invalid/corrupt input (`"invalid data found
-when processing input"`, `"moov atom not found"`, `"could not find codec
-parameters"`) — by plain substring matching against lowercased process
-output. Deliberately shared between yt-dlp and ffmpeg failure text rather
-than living in `YTDLPService`/`FFmpegService` separately: both are just
-processes hitting the same OS `write()` errors on macOS, so the same
-patterns apply to either one's stderr. `.none` means "not recognized as
-one of these" — callers fall back to their own finer-grained
-classification for transient cases (`YTDLPService.classifyFailure`'s
-`.forbidden403`, the only kind that was ever auto-retried).
-
-**Both existing auto-retry loops are now gated on
-`!SystemFailureKind.classify(...).isFatal`, and both are hard-capped at
-`AppViewModel.maxAttemptsPerPhase` (= 2) attempts total, expressed as an
-explicit bounded loop/counter rather than an unbounded `if`-triggered
-retry**:
-- The HTTP-403 download retry (`runDownloadAndConvert`'s download phase)
-  — now a `repeat { ... } while true` loop with an explicit
-  `downloadAttempts` counter and `currentSelector` variable (previously a
-  single `if` around one hardcoded retry — functionally the same one
-  retry, but now expressed so a future change to the retry condition
-  can't accidentally make it unbounded).
-- The hardware→software ffmpeg fallback (`runDownloadAndConvert`'s
-  conversion phase) — previously fired unconditionally on *any* hardware
-  encoder failure, including disk-full, which wasted a full second
-  encode attempt on a failure mode the software encoder could never fix
-  either. Now skipped entirely when the hardware failure is fatal per
-  `SystemFailureKind`, and only falls back for genuinely transient
-  hardware issues (e.g. an unsupported profile).
-
-Neither loop was verified to literally spin forever in the pre-fix code
-(both were already bounded to one retry each) — the fix is about
-guaranteeing *no* auto-retry mechanism, present or future, can fire on a
-fatal error class, plus an explicit numeric cap as a backstop per the
-spec ask, not just a documented bug reproduction.
-
-**Fatal-failure alerts**: disk-full/permission-denied failures (from
-either the download or conversion phase) now build a dedicated
-`ActionableAlert` directly (title/message/"OK", no `.action` — reusing
-the same `viewModel.actionableAlert`/`.alert(...)` plumbing already wired
-in `ContentView`, not a new alert type) instead of falling through to the
-generic `"... failed (see log)."` + `presentActionableAlert` path. The
-disk-full message includes the drive name (`DiskSpaceService.
-volumeName(at:)`) and, when available, both the pre-flight byte estimate
-and current available space (`DiskSpaceService.availableBytes(at:)`,
-formatted via `ByteCountFormatter`) — "if you can" per the spec, so a
-download-phase disk-full (no size estimate computed for that phase) still
-shows available space alone rather than blocking on having an estimate.
-
-**Pre-flight disk-space check** (`AppViewModel.confirmEnoughDiskSpace`,
-called from `runDownloadAndConvert` right before the conversion phase
-starts): estimates output size via `FFmpegService.estimateOutputBytes`
-(duration × estimated bits-per-second from `FFmpegService.
-estimatedBitsPerSecond`, itself driven by width/height/fps — probed
-fresh off the *downloaded* file via the new `FFmpegService.
-probeVideoDimensions`, not from the pre-download format selection, since
-the fallback-selector download path bypasses per-format-ID info
-entirely) and compares against `DiskSpaceService.availableBytes(at:)`
-for the output directory. If the estimate exceeds available space, the
-user gets a blocking Continue/Cancel alert (`AppViewModel.
-diskSpaceWarning` + `withCheckedContinuation`/`diskSpaceContinuation`,
-resolved by `ContentView`'s new `.alert(...)` calling
-`resolveDiskSpaceWarning(proceed:)`) *before* ffmpeg ever starts — not
-just a failure after the fact. Both the duration probe and the
-dimensions probe are best-effort exactly like the existing duration-only
-probe this was added alongside: if either fails, the pre-flight check is
-silently skipped (matches this file's established "probe failure ->
-degrade gracefully, don't block the run" convention elsewhere, e.g. the
-color-info probe).
-
-**Output-size estimate is deliberately rough, not exact**
-(`FFmpegService.estimatedBitsPerSecond`): ProRes uses Apple's published
-reference data rates at 1920×1080/29.97fps (Proxy=45, LT=102, 422=147,
-HQ=220, 4444=330 Mbps), linearly scaled by `(actual pixels / reference
-pixels) × (actual fps / reference fps)`. H.264 reuses the existing
-`H264Quality.hardwareBitrate` values as a flat target regardless of
-hardware/software encoder or resolution — matching that property's own
-existing "deliberately not resolution-scaled" note, since libx264's CRF
-mode doesn't target a fixed rate at all, so any number here is already
-an approximation. Good enough to catch "this clearly won't fit" before
-spending minutes encoding; never intended to predict exact output size.
-
-**Verified**: harness-tested (see "The actually-useful verification
-method" above) — `SystemFailureKind.classify` against all four fatal
-patterns plus a non-fatal (403) string; `estimateOutputBytes` reduces to
-exactly the baseline Mbps figure at the reference resolution/fps, scales
-~4x for 4K vs 1080p at the same fps for ProRes, and is resolution-*in*variant
-for H.264 as designed. Also ran a real end-to-end pass — real yt-dlp
-download of the "Me at the zoo" test clip, real `ffprobe` duration +
-dimensions probe, real byte estimate off the real probed values (no
-mocking) — confirmed via the standalone harness pattern, not just unit
-assertions on synthetic input. `DiskSpaceService.availableBytes`/
-`volumeName` verified against a real directory (returned this machine's
-actual free space and volume name, not a stub). The Continue/Cancel
-disk-space-warning *alert UI itself* was not visually screenshotted this
-session (would require actually filling the disk or faking an
-implausibly large estimate to trigger) — say so if asked, don't imply it
-was seen on screen; the underlying estimate/comparison logic it depends
-on was verified as above.
+See "Automatic 403 retry" and "Fatal-failure alerts"/"Pre-flight
+disk-space check" under "Key implementation details" above —
+`SystemFailureKind` gates both auto-retry loops (403 download retry,
+hardware→software ffmpeg fallback), and both are hard-capped at
+`DownloadEngine.maxAttemptsPerPhase` (= 2) via an explicit bounded loop,
+not an unbounded `if`. The hardware→software fallback specifically used
+to fire unconditionally on *any* hardware encoder failure, including
+disk-full — now skipped entirely when the failure is fatal, since a
+software encode can't fix a full disk either.
 
 ## Basic / Advanced mode
 
-Two UI modes sharing the exact same download/convert engine (`beginDownload`/
-`runDownloadAndConvert` in `AppViewModel`) — this is a UI-layer
-simplification, not a second implementation. `@AppStorage("appMode")`
-(`AppMode` in Models.swift, `.basic`/`.advanced`), defaults to **Basic**.
-Switched via a segmented `Picker` in the toolbar's `.navigation` placement
-(left of the URL field) — chosen over a Settings-only toggle so it's a
-one-click switch without leaving the main window.
+Two UI modes sharing the exact same download/convert engine
+(`beginDownload`/`runDownloadAndConvert`/`DownloadEngine.run`) — a
+UI-layer simplification, not a second implementation.
+`@AppStorage("appMode")` (`.basic`/`.advanced`), defaults to **Basic**.
+Switched via a segmented `Picker` in the toolbar's `.navigation`
+placement.
 
 **Advanced mode is byte-for-byte the pre-existing interface** — formats
-table, per-format video/audio selection, Fetch Formats/Best Quality
-toolbar buttons, the full Output/Conversion `Form`. Nothing about it
-changed; it's just now conditionally rendered (`if appMode == .advanced`)
-instead of always-on.
+table, per-format selection, Fetch Formats/Best Quality, full Output/
+Conversion form — just conditionally rendered.
 
-**Basic mode flow**: paste a URL, press the toolbar's Download button (or
-hit Return in the URL field — both call `ContentView.startBasicFlow`),
-which fetches formats *silently* — no "Fetch Formats" step — via
-`AppViewModel.fetchFormatsAwaiting`, then opens `BasicResolutionSheet`
-(private view in ContentView.swift) on success. The sheet shows only
-resolutions that actually exist for the video (720p/1080p/4K, filtered by
+**Basic mode flow**: paste a URL, press Download (or Return in the URL
+field) — fetches formats silently (`fetchFormatsAwaiting`, no visible
+"Fetch Formats" step), then opens `BasicResolutionSheet` on success.
+Shows only resolutions that actually exist (720p/1080p/4K, via
 `BasicModeService.availableResolutionChoices`) plus an always-present
-"Best available", a single "Editing quality (ProRes)" toggle, and a Go
-button (disabled until a resolution is picked — no default pre-selection,
-deliberately not guessing a preference). Basic mode's own `outputFolderSection`
-(just the folder picker, split out of the old combined `outputSection`)
-is the only other visible control — no conversion picker, no tier/quality
-pickers, no codec names anywhere in the Basic UI, per spec.
+"Best available" (pre-selected by default, since it's always the last
+entry in `choices` — a dead-end blank sheet with Go disabled was a real
+regression fixed early on), a single "Editing quality (ProRes)" toggle
+with a full tier picker underneath when on (`.standard`/"422" is the
+default and carries a "Recommended" badge — deliberately not `.hq`,
+Advanced mode's own default; each tier shows a plain-English tradeoff
+line via `ProResTier.basicModeTagline`), and a "Delete source file after
+conversion" toggle (default **true**, only shown/forwarded when ProRes
+is actually on for that run). No codec names or conversion picker
+anywhere in the Basic UI.
 
-**`fetchFormats` was refactored, not duplicated**: the Advanced toolbar's
-fire-and-forget `fetchFormats(cookiesFromBrowser:)` and Basic mode's
-awaitable `fetchFormatsAwaiting(cookiesFromBrowser:) async -> Bool` both
-now call a shared private `performFetchFormats`. Basic mode needs to
-*await* the fetch (to know when to open the sheet) where Advanced mode's
-button never did — this was the smallest change that added that
-capability without touching Advanced's existing behavior at all.
+**Guiding principle for `BasicModeService.plan`: a Basic-mode user must
+never end up with a file that doesn't open in QuickTime.**
+- ProRes on: always converts to the picked tier via
+  `"<video>+bestaudio"` (ffmpeg re-encodes audio to `pcm_s16le` anyway,
+  so source audio codec doesn't matter).
+- ProRes off, an H.264 (`avc1`) format exists at the target resolution:
+  downloads it directly, `conversionMode: .none`, paired with the best
+  AAC/m4a audio (`bestAACAudio`, matching `acodec` prefix `mp4a`) —
+  *not* yt-dlp's `bestaudio`, since YouTube's highest-bitrate audio is
+  often Opus, which doesn't play in QuickTime inside an mp4 container.
+- ProRes off, no H.264 at that resolution (always true above 1080p —
+  YouTube only serves VP9/AV1 there): downloads the best source at that
+  tier and forces `conversionMode: .h264` at `.high` so the output still
+  opens in QuickTime. This path always deletes the source on success
+  (no toggle shown — the source is guaranteed unplayable alone).
 
-**Core format-selection logic lives in `BasicModeService`** (new file,
-pure Swift, no SwiftUI — harness-tested like YTDLPService/FFmpegService),
-not in AppViewModel/ContentView, so it could be verified against both
-synthetic and real yt-dlp data without a GUI:
+**Codec-tag verification**: `FFmpegService.probeCodecTag` confirms real
+output — profile 2 (422) → `apcn`, profile 3 (422 HQ) → `apch`.
+`runDownloadAndConvert` logs `"Output codec tag: <tag> (expected apcn
+for 422, apch for 422 HQ)"` after every successful ProRes conversion
+(gated on `!isH264`), so this stays confirmable on every real run.
 
-- `availableResolutionChoices(formats:)` — which of 720p/1080p/4K/Best
-  available to show, in that fixed order, based on whether a video format
-  actually exists at that exact `resolutionHeight`. "Best available" is
-  always included once any video format exists.
-- `plan(for:formats:useProRes:)` — builds a `BasicDownloadPlan`
-  (formatSelector + conversionMode + h264Quality) implementing the
-  guiding principle from the spec: **a Basic-mode user must never end up
-  with a file that doesn't open in QuickTime.**
-  - ProRes toggle on: always converts to ProRes 422 (`h264Quality` is
-    unused in this branch — H264Quality.high is a harmless placeholder,
-    the caller ignores it once `conversionMode == .proRes`), regardless
-    of resolution or source codec, using `"<video>+bestaudio"` — ffmpeg
-    re-encodes the audio anyway (`-c:a pcm_s16le`), so the source audio
-    codec doesn't matter here the way it does below.
-  - ProRes off, an H.264 (`avc1`) format exists at the target
-    resolution: downloads it directly with **no conversion pass** —
-    `conversionMode: .none`. Paired explicitly with the best AAC/m4a
-    audio format (`bestAACAudio`, matching on `acodec` prefix `mp4a`),
-    *not* yt-dlp's `bestaudio` selector — verified this matters: YouTube
-    commonly offers Opus as its highest-bitrate audio track, and Opus
-    inside an mp4 container doesn't play in QuickTime. Using `bestaudio`
-    here would silently violate the "always playable" guarantee on some
-    videos even though the video codec was already correct.
-  - ProRes off, no H.264 format at the target resolution (always true
-    above 1080p, since YouTube only serves VP9/AV1 there; possible in
-    principle at 720p/1080p too): downloads the best actual source at
-    that resolution tier and forces `conversionMode: .h264` at
-    `H264Quality.high` so the output still opens in QuickTime.
-
-**A real bug caught by the harness, not by inspection**: the first
-implementation of the "Best available" branch built `candidates` from
-*every* video format regardless of height, then did
-`candidates.last(where: avc1)` — same pattern used for the fixed 720p/
-1080p/4K buckets, where it's safe because `candidates` is already
-filtered to one height. For "Best available" this was wrong: if a lower-
-resolution H.264 stream existed anywhere in the list (e.g. 1080p avc1)
-alongside a genuinely higher-resolution non-H.264 stream (e.g. 2160p
-vp9), it would pick the *lower*-resolution H.264 stream over converting
-the actual best source — silently downgrading quality while still
-technically satisfying "must be playable." Fixed by first pinning down
-the overall best `resolutionPixels`, then restricting `candidates` to
-just that resolution tier before applying the same avc1-preference
-logic. Caught by a synthetic-data assertion in the standalone harness
-(`BasicModeService`'s `.best` case with a 1080p-avc1 + 2160p-vp9 mix) —
-see "The actually-useful verification method" above for the harness
-pattern; this is a concrete example of it catching a real logic bug
-before it shipped, not just confirming happy-path behavior.
-
-**The 403-retry alert now reuses the settings a run actually started
-with, not always Advanced's `@AppStorage`**: `AppViewModel.
-retryWithBestQualitySelector` used to take all conversion settings as
-parameters, which `ContentView`'s alert button filled in from Advanced
-mode's `@AppStorage` variables unconditionally. That was already a latent
-bug for Basic mode: a Basic-mode download that picked ProRes/H.264 and
-then hit a 403 would retry using whatever Advanced's *currently
-persisted* conversion mode happened to be (possibly `.none`), silently
-breaking Basic mode's "always playable" guarantee on retry. Fixed by
-having `beginDownload` capture its own parameters into a private
-`RunConfig` (`lastRunConfig`) at the start of every run — Basic or
-Advanced — and having `retryWithBestQualitySelector()` (now
-parameterless) replay `lastRunConfig` with the fallback selector
-substituted in. `ContentView`'s alert action is now just
-`viewModel.retryWithBestQualitySelector()`, no arguments.
-
-**Verified**: `BasicModeService` harness-tested against synthetic
-multi-resolution/multi-codec `VideoFormat` data (the bug above, plus the
-direct-H.264, ProRes-always-converts, and no-video-formats-at-all cases)
-and, separately, against a real `yt-dlp -F` fetch of the "Me at the zoo"
-test clip (real `YTDLPService.fetchFormats` → real `BasicModeService.plan`
-— since that video tops out at 144p, this exercises the "no 720/1080/2160
-bucket matches, only Best available" path with genuine data, correctly
-selecting real format `18+140`). The full Xcode build was verified after
-every change (`xcodebuild ... build` → `BUILD SUCCEEDED`, not just
-`swiftc` on the harness subset). Visually verified via screenshot: Basic
-mode's default (empty) state, Advanced mode's default state (confirmed
-unchanged — same Formats/Download/Output/Conversion layout as before this
-session), and the resolution-picker sheet populated with mock
-multi-resolution formats (same mock-injection-in-`.task`-then-revert
-pattern documented elsewhere in this file — Accessibility/UI-scripting is
-still unavailable this session, consistent with every prior session's
-note, so the sheet couldn't be opened by actually clicking Download; the
-mock injection was used instead and reverted before finishing). The
-"paste URL, press Download, real formats populate the real sheet, pick a
-resolution, real download runs" full click-path was **not** end-to-end
-verified through the GUI for the same Accessibility-unavailable reason —
-say so if asked; the pieces it's built from (fetch, `BasicModeService`,
-`beginDownload`) were each verified independently as above.
-
-### Basic mode's ProRes tier picker + delete-source-after-conversion toggle
-
-Follow-up session. Two changes, both scoped to Basic mode's
-`BasicResolutionSheet`; Advanced mode's own tier picker/delete-source
-toggle (in `conversionSection`) are untouched.
-
-**Tier picker**: the "Editing quality (ProRes)" toggle used to silently
-hardcode 422 HQ (`ProResTier.hq`, matching Advanced mode's own default).
-Now, when the toggle is on, the sheet shows all five `ProResTier` cases as
-radio rows — same visual pattern as the resolution list above it — each
-with a plain-English tradeoff line (`ProResTier.basicModeTagline`, new
-computed property in Models.swift) instead of Advanced mode's bare
-`label`. 422 (`.standard`) carries a "Recommended" badge and is the
-default (`ProResTier.basicModeDefault`, `@AppStorage("basicProResTier")`
-in ContentView) — deliberately **not** 422 HQ; Basic mode's audience gets
-steered to the actually-recommended tier rather than inheriting Advanced
-mode's more headroom-oriented default. `BasicModeService.plan` and
-`BasicDownloadPlan` both gained a `proResTier` field so the picked tier
-actually reaches `AppViewModel.startBasicDownload` (which used to pass a
-hardcoded `.hq` to `beginDownload` — that hardcoding predated this tier
-picker existing at all).
-
-**Codec-tag verification**: confirmed for real, not just by reading
-`ffmpeg -h encoder=...` output — generated a tiny synthetic source with
-`ffmpeg -f lavfi -i color=...`, ran it through the real
-`FFmpegService.conversionArguments` for both `.standard` and `.hq`, and
-probed the output with a new `FFmpegService.probeCodecTag` (`ffprobe
--show_entries stream=codec_tag_string`). Real result: profile 2 (422) →
-`apcn`, profile 3 (422 HQ) → `apch`, exactly as expected. `AppViewModel.
-runDownloadAndConvert` now calls `probeCodecTag` on the output file right
-after a successful ProRes conversion and appends `"Output codec tag:
-<tag> (expected apcn for 422, apch for 422 HQ)"` to the log — so this
-stays confirmable on every real run, not just this session's harness
-check. Gated on `!isH264` (H.264 outputs don't have an interesting
-ProRes-style tag to confirm here).
-
-**Delete-source-after-conversion**: new `@AppStorage
-("basicDeleteSourceAfterConversion")` in ContentView, default **true**
-(unlike Advanced mode's equivalent toggle, which defaults false) — shown
-as a real, visible, persisted `Toggle` in the sheet, only when ProRes is
-on (there was nothing to default-on for the direct-download or
-forced-H.264 paths, which the spec didn't ask to change). The engine-level
-safety property this depends on already existed and needed no change:
-`runDownloadAndConvert`'s delete-source block was already inside the
-`convertResult.exitCode == 0` success branch (see "Delete-source-after-
-conversion" note further up this file), so a failed or cancelled
-conversion was already guaranteed to leave the source file alone — this
-session just exposed a Basic-mode toggle for a path that already had that
-guarantee, it didn't need to add one.
-
-One scoping detail worth being explicit about: `ContentView`'s sheet
-callback only forwards `basicDeleteSourceAfterConversion` to
-`startBasicDownload` when `basicUseProRes` is actually true for *this*
-run (`deleteSourceAfterConversion: basicUseProRes ? basicDeleteSourceAfterConversion : false`)
-— the toggle's persisted value must never leak into the direct-download
-or forced-H.264-at-4K paths, which don't show the toggle at all and where
-the user never had a chance to see or confirm it.
-
-**Verified**: `BasicModeService.plan`'s updated signature re-tested with
-the same synthetic multi-resolution/codec data as before (tier now
-threaded through correctly, `ProResTier.basicModeDefault` resolves to
-`.standard`). The apcn/apch codec-tag mapping verified for real as
-described above (a real `ffmpeg` conversion + real `ffprobe` read-back,
-not an assumption from documentation). Visually verified via screenshot
-(same mock-injection-in-`.task`-then-revert pattern, Accessibility still
-unavailable this session): the sheet with ProRes on shows all 5 tiers
-with their taglines, 422 marked "Recommended" and pre-selected, and the
-"Delete source file after conversion" toggle on with its explanatory
-caption. Full Xcode build verified after every change.
-
-**Unrelated but worth recording — a stale off-screen window position**:
-while getting the app frontmost for the screenshot above, `Grab`'s main
-window and the resolution sheet were both positioned at large negative X
-coordinates (`NSWindow Frame main` in `defaults read com.local.grab`
-referenced a `-1920`-wide screen slot that no longer exists on this
-machine) — the exact same class of stale-window-autosave issue already
-documented in "Window sizing (round 3)" above, just triggered by a
-different cause (a disconnected external display instead of rapid
-test-relaunch cycles). Fixed the same documented way: `defaults delete
-com.local.grab "NSWindow Frame main"` + `killall cfprefsd`, then
-relaunch. Not a regression from this session's code changes — recorded
-here since it's the same gotcha resurfacing under a new trigger, in case
-a future session hits "window/sheet appears frontmost per System Events
-but nothing shows on screen" again.
-
-### Pre-selecting "Best available" in the resolution sheet
-
-Small follow-up fix: `BasicResolutionSheet`'s `selected` state used to
-default to `nil`, so the sheet always opened with nothing chosen and Go
-disabled — a dead-end first impression, working against Basic mode's
-whole "sensible defaults" premise. Fixed with a custom `init` that seeds
-`_selected = State(initialValue: choices.last)` — `.best` ("Best
-available") is always the last entry in `choices` whenever it's
-non-empty (`BasicModeService.availableResolutionChoices` always appends
-it last), so this reliably pre-selects "Best available" without needing
-to special-case which choice to default to. The user can still freely
-pick 720p/1080p/4K instead; this only changes what's selected before they
-touch anything. Verified visually (same mock-injection pattern): the
-sheet now opens with "Best available" already filled in and the Go
-button enabled.
-
-### Per-mode window height (fixing Basic mode's large dead space)
-
-**Bug**: Basic mode's window inherited whatever height was already in
-effect — Advanced mode's ~780pt default, or a saved/previous frame — even
-though `ContentView`'s root `.frame(minHeight:)` already varied by mode.
-That's the key thing to understand about why this happened:
-**`.frame(minHeight:)` only constrains how far a *manual* resize can go;
-it does not itself shrink or grow the window's current frame when the
-constraint changes** (e.g. switching `appMode`). SwiftUI's
-`.windowResizability(.automatic)` recomputes the allowed min/max range
-from the content, but nothing then actively moves the existing frame into
-that range — so Basic mode just sat at Advanced's leftover height with a
-large empty gap below its (much shorter) content, exactly matching the
-"unfinished, not minimal" complaint.
-
-**Fix**: added a `WindowAccessor` (`private struct WindowAccessor:
-NSViewRepresentable` in ContentView.swift) — an invisible, zero-drawing
-`NSView` layered into `.background()` whose only job is handing back
-`nsView.window` via a closure, since SwiftUI has no pure-SwiftUI API to
-command a window resize directly. `ContentView` stores this as
-`@State private var hostWindow: NSWindow?` and calls a new
-`applyWindowHeight(for:animate:)` both when `hostWindow` first resolves
-and on `.onChange(of: appMode)` — it sets `hostWindow`'s frame height to
-that mode's default while holding the width, x-origin, and *top* edge
-fixed (so the window visibly shrinks/grows from the bottom, anchored
-where the title bar already is, rather than the whole window jumping).
-Switching modes now visibly (and, since `animate: true` on the
-`onChange` path, smoothly) resizes the window; `.windowResizability
-(.automatic)` is untouched, so manual dragging to resize afterward still
-works exactly as before — nothing about this fix makes the window
-non-resizable, it only changes each mode's *default*.
-
-**Advanced mode's default height is still just the pre-existing hardcoded
-780** (matches this app's historical default, and Advanced's content —
-formats table + full conversion controls — comfortably exceeds any
-natural minimum, so a hardcoded number is fine there). **Basic mode's
-default is `hostWindow.minSize.height`** — the natural minimum height
-`.windowResizability(.automatic)` already computed from Basic mode's
-actual rendered content — rather than a second hardcoded guess. This
-distinction was learned the hard way this session: an initial hardcoded
-guess of 320 for Basic looked reasonable on paper but was *smaller* than
-the content's true natural minimum (native controls like `Form` have
-their own intrinsic row-height floors that a `.frame(minHeight:)` hint
-cannot compress below), so `NSWindow.setFrame` silently clamped the
-requested 320 back up to ~352 every time — verified by temporarily
-logging `hostWindow.frame`/`.minSize` before and after the resize call.
-Reading `minSize` directly instead of guessing sidesteps needing to know
-that true minimum number at all — it's already computed by the system
-before the size code needs to be present.
-
-`applyWindowHeight`'s work is deferred one runloop tick
-(`DispatchQueue.main.async`) before reading `minSize`, so SwiftUI's own
-window-constraint update (driven by the `.frame(minHeight:)` that just
-changed along with `mode`) has actually landed before Basic mode reads
-it — reading synchronously in the same tick risked seeing the *previous*
-mode's stale `minSize`.
-
-**Top-alignment**: the `Spacer(minLength: 0)` previously in Basic mode's
-branch (added to keep content pinned to the top / push the version
-footer to the bottom when there was leftover vertical space) was removed
-— with the window now actively sized to content, there's normally
-nothing left for it to absorb, and empirically it made no measurable
-difference to the computed natural minimum either way. Top-alignment
-when the user *does* manually enlarge the window is instead handled by
-`alignment: .top` on the root `.frame(minWidth:minHeight:)` modifier —
-simpler and more direct than relying on a `Spacer`'s ideal-size behavior
-inside the VStack.
-
-`GrabApp.swift`'s `.defaultSize` was tuned from `(900, 780)` down to
-`(900, 350)` — close to Basic mode's real natural minimum (Basic is the
-default `AppMode`) — purely to avoid a visible grow-then-shrink flash on
-a fresh install before `ContentView`'s own correction runs; it doesn't
-need to be exact since the `WindowAccessor`-driven correction fixes it
-up immediately regardless.
-
-**A genuine dev-machine wrinkle hit while verifying this, not a bug in
-the fix**: this session, unlike prior ones, has a second physical
-1920×1080 display connected and arranged to the *left* of the main
-2560×1440 display (confirmed via `system_profiler SPDisplaysDataType`
-and `CGGetActiveDisplayList`) — new windows were opening on that second
-display, which `screencapture` without an explicit `-D2` doesn't capture
-by default, making the window briefly look "missing"/off-screen when it
-was actually just on the other monitor. Cleared `defaults delete
-"NSWindow Frame main"`, a full preferences-domain wipe, and even a
-throwaway `Window(id:)` (the exact technique documented in "Window
-sizing (round 3)" above) *before* realizing this — none of those were
-the actual cause this time, screen geometry was. If a window ever seems
-to vanish again, check `system_profiler SPDisplaysDataType` /
-`CGGetActiveDisplayList` for a multi-monitor arrangement and capture the
-right display index before assuming a frame-cache bug — this machine's
-monitor setup can apparently change between sessions same as every other
-"just try, don't assume" permission/environment note in this file.
-
-**Verified**: real bounds queried via `Quartz.CGWindowListCopyWindowInfo`
-(same method as "Window sizing (round 3)") — Basic mode settles at a
-content-fitted height (~352, `hostWindow.minSize.height`, not a guessed
-constant) on a fresh launch with `appMode` persisted as `.basic`;
-switching the persisted default to `.advanced` and relaunching produces
-exactly the hardcoded 780. Visually confirmed (screenshot of the actual
-display Grab was running on) that Basic mode now reads as a tight,
-deliberately compact utility window — toolbar, color badge, output
-folder row, and version footer with no large empty gap — matching the
-"deliberately compact, not a large window with things missing" ask.
-Live in-app mode-toggle animation (clicking the segmented control and
-watching it resize) was **not** verified by literally clicking, same
-Accessibility-unavailable limitation noted throughout this file — the
-two states were verified independently by relaunching with each
-persisted `appMode`, and the `onChange`-driven resize call is the same
-`applyWindowHeight` function exercised by the initial-launch path, just
-triggered on a different event with `animate: true` instead of `false`.
-
-### Follow-up fix: Advanced mode's default height still clipped content
-
-Later session, filed as a user bug report: with a populated formats table
-and a completed download (Reveal-in-Finder button showing), Advanced
-mode's 1160 default clipped the bottom of the Conversion section, the
-Reveal-in-Finder button, the status text, and the log disclosure — none
-of it reachable without a manual resize.
-
-**Root cause wasn't really "1160 is too small."** The real bug: the root
-content `.frame(...)` (`ContentView.body`) had `minHeight` but no
-`maxHeight`. `alignment: .top` only controls how content is positioned
-*within* the frame's own resulting size — and without `maxHeight:
-.infinity`, that resulting size just equals the content's natural size,
-leaving nothing for `.top` to act on. So whenever the window was taller
-than Advanced content's natural height, AppKit centered the undersized
-content in the window instead of top-aligning it, silently eating any
-extra height as blank space *above* the toolbar-adjacent content rather
-than revealing more content at the bottom. Confirmed by temporarily
-pinning the Formats table to a fixed small height (200) and watching a
-dead gap appear above the video-info card instead of the Conversion
-section/Reveal button/log becoming visible, even at a much taller window.
-
-**Fix**: added `maxHeight: .infinity` alongside the existing `alignment:
-.top` on that root frame. Content now always fills and top-aligns within
-whatever height the window actually is — a too-tall default just leaves
-harmless blank space at the *bottom*, never eats space needed to reveal
-content that should already be visible.
-
-**Also bumped the Advanced default from 1160 to 1420** — even with the
-alignment fix, 1160 itself was genuinely short by roughly 200-250pt for
-realistic populated content (3-row formats table, ProRes conversion
-section, Reveal-in-Finder button, collapsed log disclosure, version
-footer). Measured precisely, not guessed: attached a `GeometryReader` to
-the last element (`versionFooter`) and read its layout position directly
-via `.frame(in:)` in a named coordinate space — this reports true layout
-geometry regardless of window/screen clipping, unlike a screenshot, and
-sidesteps this dev machine's own screen being too short (~1410 visible)
-to screenshot-verify anything taller. That measurement put the true
-minimum right around 1400; 1420 adds a small buffer. `.windowResizability
-(.automatic)` still governs manual resizing in both directions — this
-only changes each mode's *default*, same as the original per-mode-height
-work above.
-
-**Basic mode's delete-source-after-conversion bug, fixed in the same
-session**: Basic mode's H.264 auto-convert path (4K+ sources, where no
-H.264 format exists at the target resolution — see "Basic / Advanced
-mode" above) never deleted the source file after a successful
-conversion, leaving both the un-openable source and the converted H.264
-file behind. Cause: `ContentView`'s resolution-sheet `onGo` closure
-computed `deleteSourceAfterConversion` from `basicUseProRes ?
-basicDeleteSourceAfterConversion : false` — gating deletion on whether
-the user picked the ProRes toggle, not on whether a conversion actually
-ran. The forced-H.264 path sets `conversionMode: .h264` even with
-`basicUseProRes == false`, so that expression always evaluated to
-`false` for it, regardless of the (correct, engine-level) delete-on-
-success logic already shared by both conversion modes in
-`AppViewModel.runDownloadAndConvert`. Fixed by switching on
-`plan.conversionMode` instead: `.none` never deletes (nothing to
-delete — the direct-download path only ever produces one file), `.proRes`
-respects the user's own sheet toggle same as before, `.h264` always
-deletes (there's no toggle shown for this path — the source is
-guaranteed unplayable on its own, so deleting it once conversion
-succeeds is the only sensible outcome, matching the "never end up with a
-file that doesn't open in QuickTime" guiding principle in "Basic /
-Advanced mode" above). No change was needed in `AppViewModel` itself —
-its delete-after-success logic already applied uniformly to both
-conversion modes; only the Basic-mode call site was wrong.
-
-**Verified**: real Xcode build after every change (`BUILD SUCCEEDED`
-throughout). Visually verified via screenshot (same mock-injection-in-
-`.task`-then-revert pattern used throughout this file, reverted before
-finishing, confirmed by a final clean build with no mock code left):
-Advanced mode at the new 1420 default, populated with synthetic
-multi-format data plus a mocked completed-download state (Reveal button
-showing), shows the full Conversion section, the Reveal-in-Finder
-button, the "Show details" log disclosure, and the version footer all
-simultaneously visible with no clipping — window landed at 1410 on this
-dev machine (OS-clamped to the physical screen's visible height, not our
-default), confirming the fix holds even under that clamp. The delete-
-source fix was verified by reading through `AppViewModel.
-runDownloadAndConvert`'s existing delete-on-success block (unconditional
-on `isH264`, gated only on `convertResult.exitCode == 0`) to confirm no
-engine-level change was needed, and by tracing `BasicModeService.plan`'s
-three `conversionMode` cases against the new switch — not verified via a
-real end-to-end 4K download-and-convert-and-delete run (would need a
-real 4K-only source video and real disk I/O to observe the delete
-happening), consistent with this file's standing practice of saying so
-explicitly rather than implying a click-path was exercised when it wasn't.
-
-### Follow-up fix: Basic mode clipped mid-job content too
-
-Same bug class as the Advanced-mode fix above, filed as a separate user
-report right after: Basic mode's compact idle height (352,
-`hostWindow.minSize.height`) is correct for the idle state it was
-designed for, but once a job actually starts, `statusSection`'s progress
-bar appears, and once it finishes, the Reveal-in-Finder button and (if
-the user expands it) the log disclosure appear too — none of which
-`applyWindowHeight` ever re-ran for, since its only two call sites were
-the initial `WindowAccessor` resolution and `appMode` switching. The
-window just stayed pinned at its idle size for the rest of the session,
-clipping all of it.
-
-**`window.minSize` doesn't live-update the way you'd hope**, confirmed
-by reading `hostWindow.minSize` before and after forcing
-`viewModel.isBusy`/`lastOutputURL`/`log` into a populated state via the
-mock-injection pattern: identical value both times, despite the
-rendered content clearly having grown. `.windowResizability(.automatic)`
-apparently only computes it reliably around initial layout, not
-continuously — so simply re-calling `applyWindowHeight` on more triggers
-(tried first) doesn't help on its own, because `defaultWindowHeight` for
-Basic mode was still reading a stale `minSize`.
-
-**Fix, two parts:**
-1. Added `.onChange` triggers for `viewModel.isBusy`,
-   `viewModel.lastOutputURL`, `viewModel.lastError`, and `logExpanded` —
-   each calls the same `applyWindowHeight(for: appMode, animate: true)`
-   already used for the `appMode` switch, so the window actually
-   re-evaluates its target height at every point new bottom content can
-   appear or disappear.
-2. `defaultWindowHeight` no longer trusts `window.minSize.height` for
-   Basic mode unconditionally — a new `basicNeedsExpandedHeight`
-   computed property (`isBusy || lastOutputURL != nil || lastError !=
-   nil || logExpanded`) selects between the existing `minSize`-based
-   idle height and a separate hardcoded 780 once there's anything to
-   show below the color badge/output folder. One shared "expanded"
-   height rather than a separate value per state was deliberate — busy,
-   completed, and log-expanded can all transition into each other within
-   a single job, and resizing at every one of those micro-transitions
-   would be far more distracting than settling once at a height that
-   already fits all of them.
-
-**780 was measured precisely, not guessed** — same `GeometryReader`-on-
-`versionFooter` technique as the Advanced-mode fix (reads true layout
-position directly via `.frame(in:)` in a named coordinate space,
-unaffected by window/screen clipping). Measured bottomY: idle ~384, busy
-(progress bar) ~447, completed-with-log-expanded (log box at its 160
-*minimum*, only 20 mock lines) ~528. Worst case is a long real job with
-the log expanded, where `LogView`'s own `.frame(maxHeight: 320)` cap
-means up to ~160 more than the measured 528 — ~688 content + 28 padding
-+ 52 toolbar ≈ 768; 780 adds a small buffer.
-
-**A real testing trap hit while verifying this**: an early "idle"
-screenshot appeared to already show the Reveal button and an expanded
-log — looked like the fix wasn't working. Actual cause: `logExpanded`
-(`@AppStorage`) had been left `true` from an *earlier* round of this
-same testing session, so "idle" wasn't actually idle — `defaults delete
-com.local.grab logExpanded` before relaunching fixed it, and idle
-correctly showed the compact 352 height afterward. Worth remembering
-whenever a mock/test state seems to not match what the code should
-produce: check for a stale `@AppStorage` value left over from a *prior*
-test in the same session before assuming the code is wrong.
-
-**Verified**: real Xcode build after every change. Visually verified via
-screenshot, three states, each with window bounds re-queried immediately
-before capturing (an earlier attempt that reused a stale bounds query
-produced a screenshot region that didn't match the window's actual
-current size — fixed by always querying fresh bounds right before each
-capture): idle at 352 (compact, matches pre-existing documented
-behavior, unchanged), busy at 780 (progress bar fully visible, nothing
-clipped), and completed-with-log-expanded at 780 (Reveal-in-Finder
-button, full 20-line log, and version footer all simultaneously visible
-with no clipping). Manual resizability untouched —
-`.windowResizability(.automatic)` still governs both directions; this
-only changes what height each state's *default* snaps to.
+**The 403-retry alert replays the settings a run actually started
+with**, not Advanced's `@AppStorage` unconditionally — `beginDownload`
+captures its parameters into a private `RunConfig` (`lastRunConfig`) at
+the start of every run (Basic or Advanced), and
+`retryWithBestQualitySelector()` (parameterless) replays that config
+with the fallback selector substituted in. Fixes a real latent bug: a
+Basic-mode ProRes/H.264 download that hit a 403 used to retry using
+whatever Advanced mode's *currently persisted* conversion mode happened
+to be, silently breaking Basic mode's playability guarantee on retry.
 
 ## Paste-and-fetch toolbar button
 
-A small icon button (`doc.on.clipboard` SF Symbol) sits immediately left
-of the URL field in the toolbar, in both modes. Reads
-`NSPasteboard.general.string(forType: .string)`, and if it parses as a
-`URL` with an `http`/`https` scheme, fills `viewModel.urlString` and
-calls the same `handleURLFieldSubmit()` the URL field's own `onSubmit`
-already used — Advanced fetches formats directly, Basic runs the full
-silent-fetch-then-open-resolution-sheet flow (`startBasicFlow`). One
-click replaces copy-link-in-browser → switch to Grab → paste → Fetch
-Formats with copy-link → switch to Grab → click. An invalid/empty
-clipboard leaves the URL field untouched and sets `viewModel.lastError`
-to "Clipboard doesn't contain a URL." — reusing the same error-surfacing
-`lastError` text already shown by every other fetch/download failure in
-this file, rather than adding a second toast/banner mechanism for one
-edge case.
+A `doc.on.clipboard` icon button left of the URL field, both modes.
+Reads `NSPasteboard.general.string(forType: .string)`; if it parses as
+an `http`/`https` URL, fills `viewModel.urlString` and calls
+`handleURLFieldSubmit()` (same as the field's own `onSubmit`) — one
+click replaces copy-link → switch to Grab → paste → Fetch/Download. An
+invalid/empty clipboard leaves the field untouched and sets `lastError`
+to "Clipboard doesn't contain a URL." (reuses the existing error-
+surfacing mechanism, no new toast/banner).
 
-**A real toolbar-layout regression surfaced and got fixed while adding
-this**: the first attempt put the button and the `TextField` together in
-one `HStack` inside the existing single `.principal` `ToolbarItem`.
-Built and screenshotted — the *entire* URL field (and everything to its
-right) vanished from the toolbar into the overflow chevron, at the exact
-same 900pt window width that fit everything fine before this change.
-Splitting into two separate `.principal` `ToolbarItem`s (button, then
-`TextField`, no shared `HStack`) didn't fix it either — the field still
-overflowed, just the button now won the fight for space instead. Root
-cause was genuinely simple, not a SwiftUI toolbar-layout quirk: there
-just wasn't enough width. Fixed by widening the window — root content
-`.frame(minWidth:)` 820 → 860, and `GrabApp.swift`'s `.defaultSize`
-width 900 → 940 — which only *adds* room, so it can't have made
-anything that already fit worse. Re-verified: paste button and URL
-field both visible, button correctly positioned immediately left of the
-field, at the new default width.
-
-**The Fetch Formats/Best Quality/Download toolbar buttons were already
-overflowing into the chevron at this window width before this change
-too** — confirmed by the same screenshots (they weren't visible even
-before the paste button was added, at the original 900pt width).
-Pre-existing, unrelated to this feature, and out of scope here — a
-strictly wider window can only reveal more toolbar content, never less,
-so widening for the paste button couldn't have caused or worsened it.
-
-**Verified for real**, not just by inspecting the built argument
-strings: set the system clipboard to the real "Me at the zoo" test URL
-(`pbcopy`), triggered `pasteFromClipboardAndFetch()` (temporarily called
-from `.task` for the duration of the test, reverted after), and
-confirmed via debug logging that `viewModel.urlString` was populated,
-`isFetchingFormats` flipped `true`, and — after the real `yt-dlp -J`
-call completed — `formats.count == 11` and `videoMetadata.title == "Me
-at the zoo"` with `lastError == nil`. Separately set the clipboard to
-plain non-URL text and confirmed `urlString` stayed empty,
-`isFetchingFormats` stayed `false` (no doomed fetch attempt), and
-`lastError` read exactly "Clipboard doesn't contain a URL." Visually
-verified via screenshot (same mock-injection-in-`.task`-then-revert
-pattern used throughout this file) that the button renders correctly
-positioned in both Basic and Advanced mode. Real Xcode build succeeded
-after every change; no debug/mock code left in the final diff.
+**Gotcha hit while adding this**: putting the button and `TextField` in
+one `HStack`/toolbar item caused the URL field (and everything right of
+it) to overflow into the toolbar's chevron at 900pt width — root cause
+was genuinely just insufficient width, not a SwiftUI toolbar-layout
+quirk. Fixed by widening the window (root `minWidth` 820→860,
+`.defaultSize` width 900→940 at the time — since further revised, see
+"Window-sizing gotchas" above for current values). The Fetch Formats/
+Best Quality/Download buttons were *already* overflowing into the
+chevron before this change too (pre-existing, unrelated, out of scope —
+a wider window can only reveal more toolbar content, never less).
 
 ## Video metadata display
 
-Shows the fetched video's title/thumbnail/duration/channel in both modes
-so the user can confirm the right video was found before downloading —
-this is what motivated switching format-fetching from `-F` to `-J` (see
-"Format + metadata fetching" above), since `-J` already returns this
-alongside the format list in one request.
+Shows the fetched video's title/thumbnail/duration/channel in both
+modes so the user can confirm the right video was found — see
+"Video info card" under "UI architecture" above for the shared view.
+Motivated the `-F`→`-J` fetch switch (see "Format + metadata fetching"
+above), since `-J` already returns this alongside formats in one
+request. `AppViewModel.videoMetadata` is cleared at the *start* of the
+next fetch, but deliberately **not** cleared by `beginDownload`, so the
+title/thumbnail stay visible through download/conversion.
+`BasicResolutionSheet` shows the title under its heading so the user
+confirms a specific video at the exact point they commit to a
+resolution. Failure case needs no special handling — the existing
+`lastError`/alert path already surfaces a clear message, and
+`videoMetadata` stays `nil` so the card just doesn't render.
 
-**`VideoMetadata`** (`Models.swift`): `title`, `thumbnailURLString`,
-`durationSeconds`, `channel` (falls back to yt-dlp's `uploader` field if
-`channel` is absent). `thumbnailURL: URL?` and `displayDuration: String`
-("M:SS", or "H:MM:SS" once over an hour, "-" if yt-dlp didn't report a
-duration at all, e.g. some live streams) are computed properties, display
--only.
+## Visual polish (SectionCard, materials, typography)
 
-**`AppViewModel.videoMetadata`**: populated by the same `-J` fetch as
-`formats` (`performFetchFormats`), cleared to `nil` at the *start* of the
-next fetch — but deliberately **not** cleared by `beginDownload`, so the
-title/thumbnail stay visible through the download and conversion phases
-too, confirming which video the progress bar refers to. `performFetchFormats`
-also stopped streaming the `-J` call's raw output into the log via
-`streamHandler()` (passes a no-op `onOutput` instead) — unlike `-F`'s
-line-oriented table or a download's `[download]` lines, `-J`'s entire
-stdout is one JSON blob tens of KB long, and dumping that into the log
-would just be noise; a summary line ("Found "<title>" — N format(s).")
-is appended once instead.
+**`SectionCard`**: the shared "gently raised surface" wrapper for
+Formats/Download/Output/Conversion — icon + bold `.headline` title row,
+`Color(nsColor: .controlBackgroundColor)` background (see the vibrancy
+bug below for why this isn't `.thickMaterial`), `RoundedRectangle`
+corner radius 14, a hairline `Color.primary.opacity(0.07)` stroke, and
+`.shadow(color: .black.opacity(0.16), radius: 8, y: 3)`. `Form(.grouped)`
+sections wrapped inside it have their own title removed (one header per
+card, not two).
 
-**UI** (`ContentView.videoInfoSection`/`videoInfoCard`): a `ViewBuilder`
-shared by both modes — shows a small spinner + "Fetching video info…"
-while `isFetchingFormats`, the card once `videoMetadata` is non-nil,
-nothing otherwise (so the empty/idle state has no dead space, consistent
-with this file's existing "no large empty gap" standard). `videoInfoCard`
-takes a `prominent: Bool` (`appMode == .basic`) that only changes sizing/
-font weight, not structure — Basic mode's card (176×99 thumbnail,
-`.title3.weight(.semibold)`, up to 3 title lines) is the main thing
-filling that mode's otherwise-thin window before a download starts, per
-the design ask; Advanced mode's (96×54, `.headline`, up to 2 lines) sits
-above the Formats table, compact enough not to compete with it. Both are
-literally the same view/state, not two implementations. The thumbnail
-itself is `AsyncImage(url:)` (SwiftUI's built-in remote-image loader, at/
-above this app's macOS 14 deployment floor) with `.empty`/`.failure`
-placeholder phases — deliberately no hand-rolled URLSession fetch/cache in
-`AppViewModel`, since `AsyncImage` already covers "loading state" and
-"handle a bad/unreachable thumbnail URL gracefully" with no extra code.
+**Materials/vibrancy gotchas (two real bugs, both fixed)**:
+1. The root `VStack`'s `.background(.regularMaterial)` (originally added
+   just for title-bar vibrancy) actually covered the *entire* content
+   area, tinting every card with whatever's behind the window. Fixed by
+   replacing it with a plain opaque `Color(nsColor:
+   .windowBackgroundColor)`. The title bar keeps its own native vibrancy
+   for free regardless (automatic from `.toolbar` being present) — a
+   separate drawing layer, untouched by this.
+2. **`Form(.grouped)`'s own internal Section box is vibrant independent
+   of whatever view it's embedded in** — even after fixing #1, the
+   Download/Output/Conversion cards still showed a tint, but only inside
+   the Form's row area, not in `SectionCard`'s own padding gutter.
+   Isolated with a minimal standalone harness (a bare `Form { Section {
+   ... } }.formStyle(.grouped)` next to a flat `Color` swatch — the
+   Form's rows tinted, the flat swatch didn't). Fixed with
+   `.scrollContentBackground(.hidden)` on every `Form(.grouped)` in the
+   app (ContentView's three sections *and* SettingsView) — this turns
+   off the Form's own background so it shows whatever's actually behind
+   it. `SettingsView` also needed an explicit `.background(Color(nsColor:
+   .windowBackgroundColor))` once its Form could no longer rely on an
+   assumed-opaque default. **Both were verified by pixel-sampling real
+   screenshots** (`PIL.Image.getpixel`, confirming `R == G == B`, not by
+   eye), tested against a saturated Safari-window backdrop rather than
+   changing the desktop wallpaper (see the wallpaper caution below). The
+   toolbar strip itself keeps a small, expected native tint — that's
+   correct, standard title-bar behavior, confined to that thin strip.
 
-**Basic mode's resolution-picker sheet** (`BasicResolutionSheet`): takes a
-new `title: String?` (from `viewModel.videoMetadata?.title`, passed at the
-`ContentView` call site) shown as a secondary-styled line directly under
-the "Choose a Resolution" heading — so the user is confirming a specific
-video, not an anonymous URL, at the exact decision point where they pick a
-resolution and commit to a download.
+If a future `SectionCard`/material change is made, sample pixels behind
+a saturated backdrop before trusting it's actually neutral — this class
+of bug is subtle enough that it shipped once already and wasn't obvious
+until an unrelated fix made it stand out.
 
-**Failure case** ("bad URL, private video, etc."): no new handling was
-needed — `performFetchFormats`'s existing failure branch (`lastError` +
-`presentActionableAlert(for:)`, unchanged by the `-F`→`-J` switch since
-yt-dlp's stderr wording on failure is identical either way) already
-surfaces a clear message rather than silence; `videoMetadata` is left
-`nil` in that case, so `videoInfoSection` just renders nothing rather
-than a stale/wrong card.
+**Don't change the desktop wallpaper via script to test this kind of
+thing** — done once without asking, and the user's wallpaper was a
+dynamic/Aerial one that AppleScript's static-image API couldn't restore.
+Use a full-screen colored window from another app instead; the
+compositor doesn't care whether what's behind a window is the literal
+desktop or another window.
 
-**Verified**: real end-to-end fetch of the "Me at the zoo" test clip
-through the actual harness-equivalent `YTDLPService.fetchFormats` (see
-"Format + metadata fetching" above) — real title, real thumbnail URL,
-real duration/channel. Visually verified via screenshot (same
-mock-injection-in-`.task`-then-revert pattern used throughout this file,
-Accessibility still unavailable this session): Basic mode's prominent
-card with a real loaded thumbnail (confirms `AsyncImage` actually
-fetching over the network works, not just that the URL is well-formed),
-Advanced mode's compact card sitting above a populated Formats table, and
-the resolution sheet showing the title under its heading. Switching modes
-between screenshots was done via `defaults write com.local.grab appMode
--string <mode>` + relaunch rather than clicking the segmented control,
-same limitation/workaround as "Per-mode window height" above. Did **not**
-verify the real "paste URL, click Download, real metadata + thumbnail
-populate live" click-path end-to-end for the same Accessibility-
-unavailable reason — the pieces it's built from (the real fetch, and the
-UI states driven by `videoMetadata`) were each verified independently as
-above.
+## Playlist support
 
-## Visual polish pass (SectionCard, materials, typography)
+Paste a playlist link (or a video link with `&list=`), pick which videos
+to grab, and process them one at a time via a real job queue — built on
+the exact same download/convert engine the single-video flow uses, with
+the hard constraint that single-video behavior had to stay identical.
 
-Styling-only follow-up session — no functionality, layout structure, or
-download/convert logic touched, per an explicit constraint. Goal was to
-make Grab read as more modern/premium while staying a native macOS
-utility (no iOS patterns), legible in both light and dark mode.
+**`DownloadEngine`** (`DownloadEngine.swift`, extracted from what used to
+be a ~300-line `AppViewModel.runDownloadAndConvert`): a `@MainActor enum`
+taking an explicit `runner: ProcessRunner` and a `sink:
+DownloadProgressSink` instead of writing to `@Published` properties or
+firing alerts/notifications directly (a queue must never pop an
+interactive alert or per-job notification mid-batch). Returns a
+structured `Outcome` (`.success`/`.downloadFailed`/
+`.outputPathUndetermined`/`.diskSpaceDeclined`/`.conversionFailed`).
+`AppViewModel.runDownloadAndConvert` is now a thin wrapper: calls
+`DownloadEngine.run(..., sink: self)` and switches on `Outcome` to
+reproduce the old inline behavior exactly — including a genuine
+asymmetry between the two failure sites (download failure falls back to
+`presentActionableAlert`/`classifyFailure`; conversion failure has its
+own message and never calls `presentActionableAlert`) that a flat
+success/error-string boundary would have erased. Rewriting single-video
+to be "a queue of one" instead was rejected as too much regression risk
+for an explicit "don't break single-video" ask; duplicating the engine
+was rejected because it's had multiple real bugs fixed in it over
+several sessions and a second copy would drift.
 
-**`SectionCard`** (new private view, `ContentView.swift`, near
-`WindowAccessor`): the shared "gently raised surface" wrapper now used by
-all four top-level sections — Formats, Download, Output, Conversion. Icon
-+ bold `.headline` title row, `.thickMaterial` background, `RoundedRectangle`
-corner radius 14, a hairline `Color.primary.opacity(0.07)` stroke border,
-and a soft `.shadow(color: .black.opacity(0.16), radius: 8, y: 3)`. All
-native SwiftUI (material + shadow modifiers), no hand-rolled blur/gradient.
-`formatsSection` was converted from a plain `GroupBox` to `SectionCard`;
-`downloadOptionsSection`/`outputFolderSection`/`conversionSection` each
-now wrap their existing `Form(.grouped)` in a `SectionCard`, with the
-`Form`'s own `Section("...")` title removed (passed as an untitled
-`Section { ... }`) so there's exactly one header per card, not two. The
-`Form`'s native grouped-row background is untouched and still opaque —
-nesting an opaque native list inside a translucent card is what gives the
-"layered chrome, solid content" look the spec asked for, verified by
-sampling actual rendered pixel color (see below).
-
-**Content-vs-chrome opacity, verified by pixel sampling, not just eyeballing**:
-this dev machine's current desktop wallpaper is reddish/maroon-toned, which
-made it easy to empirically confirm the "solid content surfaces, translucent
-chrome" split actually holds and isn't just claimed. Sampled raw RGB via
-`PIL.Image.getpixel` on real screenshots: the video-info card's fill (now
-`Color(nsColor: .textBackgroundColor)`, changed from the old
-`.quaternary.opacity(0.5)` specifically because quaternary is itself a
-translucent system color — dense text sitting on it doesn't meet "solid,
-legible" now that shadows/materials are used elsewhere) sampled as neutral
-`(23,23,23)` — no wallpaper bleed. The `SectionCard`/root-window materials
-sampled as warm-tinted `(42,30,28)` / `(40,27,26)` — i.e. **do** pick up the
-backdrop, which is the correct, expected behavior for `.thickMaterial`/
-`.regularMaterial` and is what "layered translucent chrome" means; it'll
-read as a neutral tint on a typical neutral wallpaper, this machine's
-wallpaper just makes the effect obvious. `LogView` and the formats `Table`
-were left as pre-existing solid backgrounds (`textBackgroundColor` and
-Table's own native row background respectively) — already correct, no
-change needed there.
-
-**Advanced mode's fixed window height bumped 780 → 1160**: adding a
-14pt-padded, `.headline`-height header to three previously-compact
-`Form(.grouped)` sections (Download/Output/Conversion) plus the Formats
-card's own new padding meant the pre-existing hardcoded 780 (see "Per-mode
-window height" above) started clipping the Conversion section and the log
-disclosure/version footer entirely — no scroll view exists to fall back
-on. Caught by *not* trusting the padding additions to be visually free —
-temporarily hardcoded a much taller height (1400), rebuilt, screenshotted,
-and confirmed real content extended well past 780. Re-tuned the constant
-empirically at several sizes (1000 → 1140 → 1160) via the same
-build-relaunch-screenshot loop until the version footer was fully on
-screen with only a small margin — not a guess. `SectionCard`'s own padding/
-header were also trimmed once (14pt padding/`.title3` header down to
-10pt/`.headline`) specifically to keep this height increase from being
-larger still — a bigger, emptier-feeling window was treated as a real
-regression against this session's own "no empty dead space" constraint,
-not an acceptable side effect of "more corner rounding."
-
-**Selected-row accent highlighting added to `BasicResolutionSheet`**: the
-resolution list and the ProRes tier list already showed a filled vs.
-outline SF Symbol circle for the selected row; added a matching
-`Color.accentColor.opacity(0.1–0.12)` row background (`RoundedRectangle`
-cornerRadius 6) so the selected state reads clearly at a glance, not just
-via the small circle glyph — consistent, accent-colored "selected state"
-styling was one of the explicit asks.
-
-**Root `VStack` spacing/padding**: 10/12 → 12/14 (a small, deliberate
-tightening-then-loosening pass, not arbitrary — tuned alongside the
-`SectionCard` padding trim above so total added chrome stayed as small as
-it could while still reading as "intentional," per the same dead-space
-constraint).
-
-**Verified**: real `xcodebuild ... build` → `BUILD SUCCEEDED` after every
-edit (several iterations, not just the final one). Visually verified via
-screenshot in both light and dark mode (same mock-injection-in-`.task`-
-then-revert pattern as every prior UI session in this file — reverted
-before finishing, confirmed by a final clean build with the mock block
-removed): Advanced mode populated with synthetic multi-resolution/codec
-formats at the new 1160 default height (nothing clipped, in both
-appearances), Basic mode's compact card-based Output section, and the
-`BasicResolutionSheet` with ProRes on (tier list + selected-row highlight
-visible). This session's dark-mode toggling used
-`osascript -e 'tell application "System Events" to tell appearance
-preferences to set dark mode to <bool>'` rather than the `defaults write
--g AppleInterfaceStyle` key this file has used in the past — on this
-machine's OS build, reading/writing that legacy key no longer reflects or
-changes the real effective appearance (confirmed: `defaults read -g
-AppleInterfaceStyle` reported no key/"light" while the real rendered
-appearance and `System Events`' own `dark mode of appearance preferences`
-property both said the system was actually in Dark). Worth knowing if a
-future session's light/dark toggle via the old `defaults` key silently
-doesn't do anything — check `System Events`' `appearance preferences`
-directly instead of assuming the key is stale/wrong. System appearance
-and this session's `com.local.grab` testing defaults (`appMode`,
-`hasCompletedOnboarding`, `hasAcknowledgedDisclaimer`, the window frame
-autosave) were all restored/cleared before finishing, same as this file's
-standing practice.
-
-### Follow-up fix: wallpaper/backdrop color bleeding through content
-
-The polish pass above shipped with a real bug: the whole window had a
-visible warm color cast, tracked down to two distinct causes, both
-involving `Material`/vibrancy sampling whatever's behind the window rather
-than staying opaque.
-
-**Cause 1 — the root content background was a `Material`, not a color.**
-`ContentView`'s root `VStack` had `.background(.regularMaterial)` covering
-the *entire* content area (all cards, not just window chrome) — inherited
-from the original "Window chrome translucency" work, which (reasonably,
-at the time) assumed a single root material would only visually read as
-title-bar vibrancy. Fixed by replacing it with
-`.background(Color(nsColor: .windowBackgroundColor))` — a plain opaque
-system color — and switching `SectionCard`'s own `.thickMaterial`
-background to `Color(nsColor: .controlBackgroundColor)` the same way. The
-toolbar/title-bar strip keeps its own native vibrancy for free regardless
-of this change — that's AppKit's automatic unified-toolbar behavior
-(triggered by `.toolbar` being present at all, see "Window chrome
-translucency" above), a separate drawing layer from this VStack's own
-background, never touched by this fix.
-
-**Cause 2 — `Form(.grouped)`'s own internal Section box is *itself*
-vibrant, independent of whatever view it's embedded in.** This one was
-much less obvious and cost real time to isolate: even after fixing cause
-1, the Download/Output/Conversion cards *still* showed a visible tint —
-but only inside the Form's actual row area, not in the `SectionCard`'s own
-padding gutter around it. Confirmed with a minimal standalone `swiftc`
-harness (`WindowGroup` + a `SectionCard` copy + a bare `Form { Section {
-Toggle(...) } }.formStyle(.grouped)`, run for real and screenshotted): a
-flat `Color` swatch filling a window was neutral, but the exact same color
-used as `SectionCard`'s background rendered neutral *outside* the Form and
-visibly warm-tinted *inside* the Form's Section box — conclusively
-isolating the vibrancy to `Form(.grouped)`'s own internal rendering, not
-`SectionCard`, not the root background, not `.controlBackgroundColor`
-itself (a second harness test with four flat color swatches side by side
-showed `.controlBackgroundColor` alone is perfectly neutral). Fixed with
-`.scrollContentBackground(.hidden)` on every `Form(.grouped)` in the app —
-`downloadOptionsSection`/`outputFolderSection`/`conversionSection` in
-`ContentView`, and `SettingsView`'s Form too (same underlying defect,
-confirmed to apply there as well since it's a property of `Form(.grouped)`
-itself, not anything specific to `SectionCard`) — which turns off the
-Form's own system background so it shows whatever's actually behind it
-(now a plain opaque color, at every one of those call sites) instead.
-`SettingsView` also gained an explicit `.background(Color(nsColor:
-.windowBackgroundColor))` since hiding the Form's own background means it
-can no longer rely on an assumed-opaque Settings-window default.
-
-**This was almost certainly a pre-existing defect, not something the
-polish pass introduced** — `Form(.grouped)` was used for these three
-sections since long before this session, so cause 2 likely already tinted
-these sections against colorful wallpaper before any of this session's
-changes; it just wasn't as visually obvious back when the *whole* window
-was already uniformly tinted by cause 1, and became obviously wrong only
-once cause 1 was fixed and the Form rows stood out against an otherwise-
-neutral surroundings.
-
-**Verified by pixel value, not by eye** — screenshots were sampled with
-`PIL.Image.getpixel` at multiple points (video card, `SectionCard` gutter,
-Form row interior, inter-card window gap) before and after each fix, in
-both light and dark mode, confirming exact `R == G == B` (genuinely
-neutral, zero hue) everywhere in content, vs. a visible `R > G ≈ B` warm
-skew before the fix. Tested against a real, strongly saturated backdrop —
-a full-screen magenta/cyan diagonal-stripe HTML page opened in Safari and
-resized (via `osascript -e 'tell application "Safari" to set bounds of
-front window to {x, y, w, h}'`, a plain Apple Event property set that
-doesn't need Accessibility permission, unlike UI-scripting) to sit
-directly behind Grab's window — chosen over changing the actual desktop
-wallpaper specifically to avoid repeating the unrecoverable-Aerial-
-wallpaper mistake documented earlier in this file ("Test wallpaper note"),
-while still being an equally valid test: `NSVisualEffectView`/`Material`
-sampling doesn't care whether what's behind the window is the literal
-desktop picture or another app's window, only what the compositor
-actually renders there. The toolbar strip was also sampled and confirmed
-to retain a small, expected native tint (e.g. `(32,24,24)` vs. a neutral
-`(23,23,23)` immediately below it) — consistent with how a real macOS
-title bar normally behaves against a saturated wallpaper (Finder/Safari
-do the same), and confined to that thin strip rather than bleeding into
-content, which is what "limit translucency to the window chrome" means
-in practice here; no custom `NSVisualEffectView`/blending-mode code was
-added for the toolbar since its existing automatic native vibrancy already
-satisfies that.
-
-### Follow-up fix: Advanced mode's ProRes Tier default
-
-Advanced mode's `@AppStorage("proResTier")` (`ContentView.swift`) had been
-`.hq` ("422 HQ") in every single commit in this repo's history — despite
-prior sessions apparently believing they'd changed it to `.standard`
-("422"), `git log -p` on this line showed it was never actually committed
-as anything but `.hq`. Fixed by changing the default to `.standard`.
-
-**Not a persisted-value problem this time** — checked first, since that's
-the other classic way a default change silently "doesn't take" (`Basic
-Mode`'s `@AppStorage("basicProResTier")` already defaults correctly to
-`.standard` via `ProResTier.basicModeDefault`, for contrast). `defaults
-read com.local.grab proResTier` had no key at all on this dev machine, so
-the code-level default really was the only thing controlling what a fresh
-launch shows — it just had never actually been edited.
-
-**A real debugging trap hit while verifying this, worth recording**: a
-`Grab.app` process launched earlier in the session (with Xcode's
-`-NSDocumentRevisionsDebugMode YES` flag, meaning Xcode's own Run action
-had started it at some point, not a plain `open`) kept surviving `pkill -x
-Grab` *and* `kill -9 <pid>` *and* `osascript -e 'tell application "Grab"
-to quit'` (the last one returned "AppleEvent timed out") — every rebuild
-kept getting screenshotted through that same stale process (same
-`CGWindowNumber` before and after each "fresh" launch), so code changes
-looked like they weren't taking effect at all. Diagnosed by temporarily
-setting the default to something visually unmistakable (`.proxy`,
-"Proxy") — if a rebuild+relaunch still showed the *old* label, that would
-prove the running process wasn't actually being replaced, independent of
-whatever the real fix was supposed to be. Resolved itself once that
-particular process was gone (a plain `osascript -e 'tell application
-"Grab" to quit'` worked cleanly on the *next* freshly-launched instance,
-and its window had a distinctly new `CGWindowNumber` — the tell to confirm
-you're actually looking at a new process, not the old one still holding
-the window). **If a rebuilt app ever seems to completely ignore a source
-change no matter how certain the edit/build looks correct, check for a
-stuck previously-debugged instance (`ps aux | grep Grab`, look for
-`-NSDocumentRevisionsDebugMode`) before assuming the code change itself is
-wrong** — this cost real time chasing a phantom "the default isn't taking"
-theory before the actual stuck-process cause was found.
-
-**Verified**: `defaults delete com.local.grab proResTier` (confirmed no
-key existed even before this), rebuilt, launched a genuinely fresh process
-(confirmed via a new `CGWindowNumber`), screenshotted — Tier reads "422",
-not "422 HQ" or "Proxy". `.standard`'s label is `"422"` per `Models.swift`
-(rawValue 2 — separately confirmed in an earlier session's real
-`ffprobe`-verified codec-tag test that profile 2 produces the `apcn`
-QuickTime tag, matching what "422" is supposed to mean).
-
-## Playlist support (the v1 feature-complete milestone)
-
-The final v1 feature: paste a playlist link (or a link that has both a
-video and a `&list=` param), pick which videos to grab, and let Grab
-process them one at a time via a real job queue — all built on top of
-the exact same download/convert engine the single-video flow already
-used, not a second implementation. The hard constraint going in: a
-single-video download today had to behave **exactly** the same after
-this shipped.
-
-### The core architectural move: extracting `DownloadEngine`
-
-`AppViewModel.runDownloadAndConvert` was a ~300-line function (download
-retry loop, HDR detection, disk-space preflight, hardware→software
-encoder fallback, delete-source-after-conversion) that wrote straight
-into `AppViewModel`'s own `@Published` properties. The queue needed the
-exact same logic, reporting into per-job state instead. Duplicating it
-was rejected outright — this logic has had multiple real bugs found and
-fixed in it over several sessions (see "Retry safety" and "HDR path"
-elsewhere in this file); a second copy would drift out of sync with
-every future fix. Rewriting the single-video path to be queue-based
-(i.e. "everything is a queue of one") was also rejected — too much
-regression risk for a feature whose explicit ask was "don't break
-single-video behavior."
-
-Instead: the function's entire body moved, near-verbatim, into a new
-`@MainActor enum DownloadEngine` (`DownloadEngine.swift`), taking an
-explicit `runner: ProcessRunner` parameter (previously `self.runner`)
-and a new `sink: DownloadProgressSink` protocol parameter instead of
-writing to `@Published` properties directly. It returns a structured
-`Outcome` enum (`.success`/`.downloadFailed`/`.outputPathUndetermined`/
-`.diskSpaceDeclined`/`.conversionFailed`, each carrying enough raw
-detail for a caller to reconstruct its own response) rather than
-setting `lastError`/`actionableAlert`/`lastOutputURL` or firing a
-notification itself — those all moved to each caller, because the
-queue must never pop an interactive alert or fire a per-job
-notification mid-batch. `AppViewModel.runDownloadAndConvert` is now a
-thin wrapper: calls `DownloadEngine.run(..., sink: self)`, then
-switches on `Outcome` to reproduce **exactly** what the old inline code
-did — including a genuine asymmetry between the two failure sites (a
-download failure falls back to `presentActionableAlert`/
-`classifyFailure` for `.missingBinary/.invalidInput/.none`; a
-conversion failure has its own separate `.invalidInput` message and
-never calls `presentActionableAlert` at all) that a naive flat
-success/error-string boundary would have silently erased.
-
-`DownloadProgressSink` (same file): `setPhase`, `setProgressLabel`,
+`DownloadProgressSink`: `setPhase`, `setProgressLabel`,
 `setProgressFraction`, `setProgressETA`, `appendLog`, `setColorInfo`,
-`confirmEnoughDiskSpace`. `progressFraction`/`progressETA` are
-deliberately **separate** methods, not one combined `setProgress
-(fraction:eta:)` call — the original code writes them independently in
-several places (e.g. the conversion-progress closure unconditionally
-updates fraction but only conditionally updates ETA, deliberately
-leaving a stale ETA in place when neither the speed-based nor
-wall-clock-fallback branch applies, for smoothing), and collapsing them
-into one call would have changed that smoothing behavior.
-`AppViewModel: DownloadProgressSink` delegates to its pre-existing
-`appendLog`/`confirmEnoughDiskSpace` methods (had to become `internal`,
-not `private` — Swift requires a protocol witness to be at least as
-visible as the protocol itself, even when the conformance is declared
-in the same file) and a few new one-line property-setter wrappers;
-`setPhase` is a no-op there (the single-video UI already conveys
-downloading-vs-converting via `progressLabel`'s text). `maxAttemptsPerPhase`
-moved from a private `AppViewModel` constant to `DownloadEngine.
-maxAttemptsPerPhase`.
+`confirmEnoughDiskSpace` — fraction/ETA are deliberately separate calls,
+not one combined method, since the original code sometimes updates
+fraction without ETA (deliberate smoothing that a combined call would
+break).
 
-**Verified this extraction is behaviorally faithful**, not just
-"compiles": the exact same standalone-harness pattern this file already
-documents (`DownloadEngine.swift` has zero SwiftUI/Combine dependency,
-same as `YTDLPService`/`FFmpegService`), extended with a trivial
-`TestSink: DownloadProgressSink` — ran two real end-to-end passes
-against the "Me at the zoo" test clip (plain download, and download +
-real `h264_videotoolbox` conversion with delete-source-after-conversion),
-confirmed real output files, correct `modeName`, and the conversion
-path's phase/log/codec output all matching what the pre-extraction code
-produced. Also confirmed via the actual built app, in both modes, that a
-plain single-video URL (no `list=` param) still opens the exact same
-resolution sheet / Fetch Formats flow as before this session touched
-anything.
+**`YouTubeURLKind.classify`** (`Models.swift`, pure `URLComponents`
+parsing, no network): detects a video id (`v` param, or `youtu.be`/
+`/shorts/`/`/embed/`/`/live/` path) independently from a nonempty `list`
+param, then combines: both → `.videoWithPlaylist`; video only →
+`.singleVideo`; list only → `.playlistOnly`; neither (including
+malformed/non-YouTube URLs) → `.other`. `.other` is treated identically
+to `.singleVideo` everywhere — an arbitrary URL must never get stuck
+behind a playlist prompt it can't satisfy.
 
-### Detection & the disambiguation prompt
+**Real pre-existing bug found while building this**:
+`YTDLPService.downloadArguments` never passed `--no-playlist` — only
+the format-fetch step did. Verified via `--simulate`: a video+list URL
+without the flag on the download step enumerated and attempted the
+*entire* playlist, not just the requested video. Before this fix,
+pasting a video-with-`&list=` URL could silently trigger a whole-
+playlist download even though format-fetch was correctly scoped.
+`--no-playlist` is now unconditional on the download step — harmless
+for plain single-video URLs and for queue jobs (which always use a
+canonical `watch?v=<id>` URL with no `list=`).
 
-`YouTubeURLKind` (`Models.swift`) + `static func classify(_ urlString:
-String) -> YouTubeURLKind`: pure `URLComponents` parsing, no network.
-Recognizes a video id independently (a `v` query param, or a
-`youtu.be`/`/shorts/`/`/embed/`/`/live/` path) from a nonempty `list`
-query param, then combines: both present → `.videoWithPlaylist`; just a
-video id → `.singleVideo`; just a list param → `.playlistOnly`; neither
-(including anything that isn't even a recognized YouTube host, or isn't
-a URL at all) → `.other`. Callers treat `.other` identically to
-`.singleVideo` — an arbitrary or malformed URL must never get stuck
-behind a playlist prompt it can never satisfy.
+**The gate**: all URL-submission entry points (URL field's `onSubmit`,
+paste button, both toolbar Fetch/Download buttons) route through one
+`handleURLFieldSubmit()` that classifies first. `.singleVideo`/`.other`
+(and `.videoWithPlaylist` under a "just the video" default) falls
+through to the pre-existing single-video flow unchanged. A pure
+playlist URL, or an ambiguous URL with an "always the playlist" default,
+opens the playlist flow with no prompt. An ambiguous URL under the
+default "always ask" shows a `.confirmationDialog` ("Just This Video" /
+"The Whole Playlist" / Cancel) — the URL is snapshotted into local
+`@State` when the gate fires, not re-read from `viewModel.urlString`
+inside the dialog action, since the field could change in between.
+`PlaylistPromptDefault` (`.alwaysAsk`/`.justVideo`/`.alwaysPlaylist`,
+default `.alwaysAsk`) is a Settings picker.
 
-**A real, pre-existing bug found and fixed while building this**:
-`YTDLPService.downloadArguments` (the actual download command) never
-passed `--no-playlist` at all — only the format-fetch step
-(`fetchFormats`) did. Verified for real via `yt-dlp --simulate` against
-a live playlist URL: a video+list URL **without** `--no-playlist` on
-the download step enumerated and attempted to download the *entire*
-20-video playlist, not just the requested video; with the flag added,
-exactly one video. This means, before this session, pasting a
-video-with-`&list=` URL into Grab could have silently triggered a
-whole-playlist download on the actual download step even though the
-format-fetch step correctly scoped to one video — this feature's "Just
-This Video" guarantee would have been unreliable without this fix.
-`--no-playlist` is now unconditional in `downloadArguments` — harmless
-for a plain single-video URL (verified identical `--simulate` output
-with and without the flag when there's no `list=` param) and harmless
-for queue jobs (which always download via a canonical `watch?v=<id>`
-URL with no `list=` param to begin with).
+**Enumeration** (`YTDLPService.fetchPlaylistEntries`): a single
+`yt-dlp --flat-playlist -J --no-warnings <url>` call — top-level `title`
++ `entries: [{id, title, duration}]`. `PlaylistEntry.url` is always
+reconstructed as `https://www.youtube.com/watch?v=<id>` from the
+entry's own `id`, not trusted from whatever `url`/`webpage_url` field
+the entry carries — defensive against extractor/version drift, not
+because this version needed it. Entries missing an `id` are skipped
+rather than failing the whole parse (removed/private videos can show up
+as partial flat entries).
 
-**The gate**: all four places that used to independently trigger a
-fetch (`handleURLFieldSubmit`'s `onSubmit`, the paste button — which
-already just called `handleURLFieldSubmit()` internally — and the
-Advanced "Fetch Formats"/Basic "Download" toolbar buttons, which used
-to call `viewModel.fetchFormats(...)`/`startBasicFlow()` directly) now
-route through one `handleURLFieldSubmit()` gate that classifies first.
-For `.singleVideo`/`.other` (and `.videoWithPlaylist` when the user's
-`playlistPromptDefault` is "just the video"), it falls through to
-`proceedAsSingleVideo()` — the exact pre-existing Advanced (fire-and-
-forget `fetchFormats`) vs Basic (awaited `fetchFormatsAwaiting`, then
-opens the resolution sheet) split, byte-for-byte unchanged. A pure
-playlist URL, or an ambiguous URL with the "always the playlist"
-default, calls `startPlaylistFlow(url:)` directly — no prompt. An
-ambiguous URL with the default "always ask" (the out-of-the-box
-default) shows a `.confirmationDialog` ("Just This Video" / "The Whole
-Playlist" / Cancel) — `pendingPlaylistURL` is snapshotted into local
-`@State` when the gate fires rather than re-read from `viewModel.
-urlString` inside the dialog's button actions, since the field could
-technically change between the prompt appearing and the tap.
-`PlaylistPromptDefault` (`.alwaysAsk`/`.justVideo`/`.alwaysPlaylist`)
-is a new Settings picker, `@AppStorage("playlistPromptDefault")`,
-defaulting to `.alwaysAsk`.
-
-### Enumeration (`YTDLPService.fetchPlaylistEntries`)
-
-Runs `yt-dlp --flat-playlist -J --no-warnings <url>` — verified for
-real against a live 20-item YouTube playlist before writing the parser
-(this file's established "verify the real JSON shape, don't trust
-docs" discipline): top-level `title` + `entries: [{id, title,
-duration}]`, one request, no per-video fetch. `PlaylistEntry.url` is
-always reconstructed as `https://www.youtube.com/watch?v=<id>` from the
-entry's own `id` rather than trusted verbatim from whatever the
-entry's own `url`/`webpage_url` field happens to contain — defensive;
-this yt-dlp version's flat entries already carry the same canonical
-form, but that's not a contract worth depending on across versions/
-extractors. Entries missing an `id` are skipped rather than failing the
-whole parse (a real playlist can contain removed/private videos that
-still show up as partial flat entries).
-
-### The queue
-
-`Job` (`Models.swift`): `id`, `url`, `title`, then a full snapshot of
-every conversion-relevant setting (`outputDir`, `isBasicMode`,
-`conversionMode`, `h264Quality`, `proResTier`,
-`useProResForBasicMode`, `downscale4K`,
+**`Job`** (`Models.swift`): `id`, `url`, `title`, plus a full snapshot of
+every conversion-relevant setting captured once at "Add to Queue" time
+(`outputDir`, `isBasicMode`, `conversionMode`, `h264Quality`,
+`proResTier`, `useProResForBasicMode`, `downscale4K`,
 `deleteSourceAfterConversion`, `useHardwareAcceleration`, `preferMP4`,
-`cookiesFromBrowser`, `sleepInterval`, `formatPolicy`) captured once at
-"Add to Queue" time — mirrors `AppViewModel.RunConfig`'s existing
-single-video snapshot pattern. Mutable: `status`, `errorMessage`,
+`cookiesFromBrowser`, `sleepInterval`, `formatPolicy`) — mirrors the
+single-video `RunConfig` pattern. Mutable: `status`, `errorMessage`,
 `progressFraction`, `progressLabel`, `progressETA`, `outputURL`.
 `JobStatus` (`queued`/`downloading`/`converting`/`completed`/`failed`/
-`cancelled`) is deliberately a **plain, no-payload** enum — an enum
-case with an associated value (`.failed(String)`) doesn't get free
-`Codable` synthesis, so the failure text lives on `Job.errorMessage`
-instead, alongside `status == .failed`. `ConversionMode`/`ProResTier`/
-`H264Quality`/`CookieBrowser` all gained `Codable` conformance (trivial
-— already `String`/`Int`-backed `RawRepresentable` enums) purely so
-`Job` itself can encode for persistence.
+`cancelled`) is a plain no-payload enum — an associated-value case
+(`.failed(String)`) wouldn't get free `Codable` synthesis, so failure
+text lives on `Job.errorMessage` instead. `ConversionMode`/`ProResTier`/
+`H264Quality`/`CookieBrowser` all gained trivial `Codable` conformance
+so `Job` can encode for persistence.
 
-**`isBasicMode` is the reason Basic- and Advanced-mode jobs resolve
-their format selector differently at processing time**, not just a
-cosmetic flag. Basic mode's actual `conversionMode` isn't knowable
-until formats are fetched — `BasicModeService.planForPolicy` might
-return `.none`/`.proRes`/`.h264` depending on what's actually available
-for *that specific video* (the same "always end up with a playable
-file" guarantee single-video Basic mode already has — see this file's
-"Basic / Advanced mode" section). Advanced mode's `conversionMode` is
-fixed by whatever's already configured in the main window, independent
-of per-video format availability, matching how Advanced's single-video
-flow has never had a playability guarantee either. `BasicModeService.
-plan(for:formats:useProRes:proResTier:)` was refactored (not
-duplicated) to extract its shared tail — everything after the
-resolution-tier `candidates` array is computed — into `private static
-func planFromCandidates(...)`; the new `planForPolicy(formats:policy:
-useProRes:proResTier:)` pre-filters the candidate pool by `policy.
-heightCap` (falling back to the *uncapped* pool if nothing exists at or
-below the cap — "best up to 1080p" is a ceiling, not a hard
-requirement a video must satisfy or be skipped) and then calls the same
-shared tail. Advanced mode's simpler, no-guarantee selection
-(`PlaylistFormatSelector.advancedFormatSelector`, a new small file —
-deliberately kept out of `BasicModeService`, whose doc comment and
-existing behavior are explicitly Basic-mode-scoped) just picks the
-best format within the policy's cap, paired with `bestaudio`.
+**`isBasicMode` drives genuinely different format-selector resolution at
+processing time**, not just cosmetics — Basic mode's actual
+`conversionMode` isn't knowable until formats are fetched per-video
+(`BasicModeService.planForPolicy` might return `.none`/`.proRes`/`.h264`
+depending on what's actually available for *that* video, same
+playability guarantee as single-video Basic mode). Advanced mode's
+`conversionMode` is fixed by whatever's configured in the main window,
+independent of per-video availability — matching single-video Advanced,
+which has never had a playability guarantee either.
+`BasicModeService.planForPolicy(formats:policy:useProRes:proResTier:)`
+pre-filters candidates by `policy.heightCap` (falling back to the
+uncapped pool if nothing exists at/below the cap — a ceiling, not a hard
+requirement) then shares the same tail logic as the single-video `plan`.
+Advanced's simpler, no-guarantee pick lives in
+`PlaylistFormatSelector.advancedFormatSelector` — kept out of
+`BasicModeService` since that file is explicitly Basic-mode-scoped.
 
-**`PlaylistFormatPolicy`** (`Models.swift`): `.bestAvailable` (uncapped)
-/ `.bestUpTo4K` (2160 cap) / `.bestUpTo1080p` (1080 cap) — the "per-
-video format picking doesn't scale for 20 items" replacement, applied
-uniformly across a queued batch. `@AppStorage("defaultPlaylistFormatPolicy")`
-persists the picker's default (starts at `.bestAvailable`), editable
-per-batch in the selection sheet exactly like `basicProResTier`'s
-existing persisted-default-but-editable pattern.
+**`PlaylistFormatPolicy`**: `.bestAvailable` (uncapped) / `.bestUpTo4K`
+(2160 cap) / `.bestUpTo1080p` (1080 cap) — applied uniformly across a
+batch, since per-video format picking doesn't scale for 20 items.
+`@AppStorage("defaultPlaylistFormatPolicy")` persists the picker's
+default (starts `.bestAvailable`), editable per-batch.
 
-**Processing** (`AppViewModel+Queue.swift`, a new extension file — kept
-out of the already-substantial `AppViewModel.swift` to keep that file's
-diff minimal; the few new stored properties `jobs`/`isProcessingQueue`/
-`isEnumeratingPlaylist`/`queueRunner`/`currentJobCancelRequested` had to
-live in the class body itself, since Swift doesn't allow stored
-properties in extensions, but everything else — every method — lives
-here): `processQueue()` is a `while let job = jobs.first(where: { $0.
-status == .queued })` loop — id-based lookup on every iteration, never
-a captured index or array snapshot, since remove/reorder/clear actions
-can mutate the array while a job is mid-flight. `processJob(id:)`
-fetches that job's formats via the *existing* `YTDLPService.
-fetchFormats` (flat-playlist enumeration never returns format lists, so
-this is a real, separate per-job fetch, exactly as the queue's own
-"fetch quickly for the checklist, fetch fully at download time" design
-implies), resolves a format selector via the Basic/Advanced split
-above, then calls `DownloadEngine.run(..., runner: queueRunner, sink:
-JobSink(...))` — `queueRunner` is a fully separate `ProcessRunner`
-instance from the single-video `runner`, matching `ProcessRunner`'s own
-"one instance per operation, never a shared singleton" convention, so a
-queue-job cancel can never touch a concurrent single-video op (in
-practice the two never truly run at once — `isBusy` now also covers
-`isProcessingQueue`/`isEnumeratingPlaylist`, a full-lockout choice
-confirmed directly rather than assumed, since a queue can run for a
-while and the alternative — leaving the rest of the app usable —
-was a real, deliberately-rejected option). One summary notification
-fires after the whole run (`"N completed, M failed"`, counted only
-from jobs finished in *that* `processQueue()` call, not the full
-`jobs` array, which could include older completed/failed jobs left
-over from a previous run) — never one per job. "Reduce request rate"
-(the existing `sleepInterval` setting) is applied *between* jobs via a
-5-second `Task.sleep` when the finished job's own snapshotted
-`sleepInterval` was true and another `.queued` job remains — distinct
-from, and in addition to, yt-dlp's own per-download `--sleep-interval`
-flag inside `DownloadEngine.run`'s `downloadArguments` call.
+**Processing** (`AppViewModel+Queue.swift`): `processQueue()` is a
+`while let job = jobs.first(where: { $0.status == .queued })` loop — an
+id-based lookup every iteration, never a captured index/array snapshot,
+since remove/reorder/clear can mutate the array mid-flight.
+`processJob(id:)` fetches that job's formats via a real per-job
+`fetchFormats` call (flat-playlist enumeration never returns format
+lists), resolves a selector via the Basic/Advanced split above, then
+calls `DownloadEngine.run(..., runner: queueRunner, sink: JobSink(...))`.
+`queueRunner` is a separate `ProcessRunner` from the single-video
+`runner`, so a queue-job cancel can never touch a concurrent single-
+video op — though in practice they never truly run at once: `isBusy`
+also covers `isProcessingQueue`/`isEnumeratingPlaylist`, a deliberate
+full-lockout choice, not an oversight. One summary notification fires
+after the whole run ("N completed, M failed", counted only from jobs
+finished in that call, not the full array) — never one per job. The
+existing `sleepInterval` setting is applied *between* jobs via a 5s
+`Task.sleep` when the finished job's own snapshotted setting was true
+and another job remains — separate from, and in addition to, yt-dlp's
+own per-download `--sleep-interval` inside `DownloadEngine.run`.
 
-**`JobSink`** (private class, same file): the queue's
-`DownloadProgressSink` — writes into one specific job's fields via a
-shared `updateJob(_ id:, _ mutate:)` id-based helper (never a captured
-index, same reasoning as `processQueue`'s loop), and also mirrors
-`appendLog` output into the *shared* `AppViewModel.log` (so "Show
-details" stays useful while a queue is running, watching whichever job
-is currently active — safe since queue and single-video processing are
-mutually exclusive via `isBusy`) and the shared `detectedColorInfo`
-badge. `confirmEnoughDiskSpace` **always returns `true` immediately**
-(logging why) rather than delegating to the interactive Continue/Cancel
-alert the single-video path uses — a queue must never pop an
-interactive dialog mid-batch; a real out-of-space failure still
-surfaces later as a normal `.conversionFailed` outcome, and that job
-gets marked Failed like any other failure, without halting the rest of
-the queue.
+**`JobSink`** (private, same file): writes into one job's fields via an
+id-based `updateJob(_ id:, _ mutate:)` helper (same reasoning as
+`processQueue`'s loop), mirrors `appendLog` into the shared
+`AppViewModel.log` and the shared `detectedColorInfo` badge (safe since
+queue and single-video are mutually exclusive via `isBusy`).
+`confirmEnoughDiskSpace` always returns `true` immediately (see
+"Pre-flight disk-space check" above).
 
-**Cancel-current vs the rest of the queue**: `cancelCurrentQueueJob()`
-sets a `currentJobCancelRequested` flag then calls `queueRunner.
-cancel()`; the in-flight `DownloadEngine.run` call returns shortly
-after with a failure outcome, and `processJob`'s `finishJob` helper
-checks the flag to mark that one job `.cancelled` (not `.failed`) before
-resetting it — the queue loop itself just moves on to the next
-`.queued` job unconditionally, satisfying "cancel the current job
-moves to next rather than killing the queue" without any special-casing
-in the loop itself. The existing single-video toolbar Cancel button
-(which only ever called `viewModel.cancel()` → the single-video
-`runner`) is now scoped to `viewModel.isFetchingFormats || viewModel.
-isRunning` specifically, not the broadened `isBusy` — otherwise it
-would visibly appear during queue processing and do nothing useful; the
-queue section has its own per-row cancel-current control instead.
-Similarly, `statusSection`'s big single-video progress bar is scoped to
-the same narrower flags — broadening it to `isBusy` would have shown a
-stale/blank progress bar (driven by `progressLabel`/`progressFraction`,
-which the queue never touches) during queue runs.
+**Cancel-current vs. the rest of the queue**:
+`cancelCurrentQueueJob()` sets `currentJobCancelRequested` then calls
+`queueRunner.cancel()`; the in-flight `DownloadEngine.run` returns
+shortly after with a failure outcome, and `finishJob` checks the flag to
+mark that job `.cancelled` (not `.failed`) before resetting it — the
+loop just moves on to the next `.queued` job unconditionally. The
+existing single-video toolbar Cancel button stays scoped to
+`isFetchingFormats || isRunning` (not the broader `isBusy`), and the
+single-video progress bar likewise — otherwise both would appear/act
+stale during queue runs. The queue has its own per-row cancel control.
 
-**Missing-tool checking is hoisted to `enqueue()`, once, before any
-job starts** — not per-job — specifically so a missing binary can never
-surface as an interactive alert mid-batch; jobs simply stay `.queued`
-if the check fails.
+**Missing-tool checking is hoisted to `enqueue()`, once, before any job
+starts** — not per-job — so a missing binary can never surface as an
+interactive alert mid-batch; jobs simply stay `.queued`.
 
 ### Queue UI
 
-A new `queueSection` (`ContentView.swift`), shown in both modes
-whenever `!viewModel.jobs.isEmpty`: job count + "Clear Completed"
-(removes only `.completed` jobs — failed/cancelled stay visible so the
-user can inspect/retry them), a `List` of `JobRow`s (status icon +
-title + compact status/progress line + status-appropriate actions —
-cancel while active, retry+remove when failed, reveal+remove when
-completed, remove otherwise) with `.onMove` reordering
-(`.moveDisabled` on the actively-processing row, so a mid-flight drag
-can't desync the queue engine's expectations), and a bounded `.frame
-(minHeight: 120, maxHeight: 260)` — this codebase has a **documented,
-recurring** bug class (unbounded-height SwiftUI content blowing out
-window auto-sizing; see "Window sizing," "Log buffer capping," and
-"Basic-mode window clipping" elsewhere in this file) hit and fixed
-three times before this feature; the queue list copies the Formats
-Table's already-established bounded-frame pattern rather than
-re-discovering the same bug a fourth time.
-
-**A real instance of that exact bug class was still hit and fixed
-during this session**, despite copying the established pattern for the
-list itself — adding the queue section as new content meant neither
-mode's existing default window height accounted for it, and (unlike
-earlier sessions) nothing re-triggered a resize when `viewModel.jobs`
-changed from empty to non-empty. Fixed with a new `.onChange(of:
-viewModel.jobs)` trigger (same `applyWindowHeight` re-run pattern
-already used for `isBusy`/`lastOutputURL`/`lastError`/`logExpanded`)
-and by adding `!viewModel.jobs.isEmpty` to `basicNeedsExpandedHeight`'s
-condition (a queue that finishes processing but still has completed/
-failed jobs visible must keep the window expanded, even though
-`isBusy` itself has gone back to false). Re-measured both modes'
-default heights with the same `GeometryReader`-on-`versionFooter`
-technique already used twice this session (10 mock jobs with mixed
-statuses, log expanded, real formats populated): Basic's existing 780
-already had a comfortable ~159px margin over the true ~621 needed, no
-change; Advanced's existing 1420 only had ~10px of margin over the true
-~1410 needed (the Formats Table's own flexible growth absorbs most
-added space regardless of what's below it, so the queue section barely
-moved the number) — bumped to 1480 for a real buffer against actual
-content (longer titles, different font metrics) rather than leaving it
-right at the edge.
+`queueSection` (shown whenever `!jobs.isEmpty`, both modes): job count +
+"Clear Completed" (only `.completed`, so failed/cancelled stay visible
+to inspect/retry), a `List` of `JobRow`s (status icon + title + compact
+status/progress line + status-appropriate actions) with `.onMove`
+reordering (`.moveDisabled` on the actively-processing row), and a
+bounded `.frame(minHeight: 120, maxHeight: 260)` (same established
+bounded-frame pattern as the Formats Table and LogView — see
+"Window-sizing gotchas" above; this exact bug class was still hit once
+more here despite copying the pattern, since adding the section as new
+content meant neither mode's default height accounted for it until an
+`.onChange(of: viewModel.jobs)` trigger and `basicNeedsExpandedHeight`
+update were added).
 
 ### Persistence
 
-New territory for this app — everything else persists via `@AppStorage`
-/`UserDefaults`; a `[Job]` array is a poor fit for that, so `jobs`
-encodes to a small JSON file instead (`~/Library/Application Support/
-Grab/queue.json`). Saved on every *structural* change (add/remove/
-reorder/status transition) via a plain `persistQueue()` call at the end
-of each mutating method — including explicitly at the moment a job's
-status flips to `.downloading` or `.converting`, not just at
-completion/failure, so the on-disk state actually reflects "this job
-was mid-flight" if the app quits right there (an early version of this
-only persisted on completion/failure, which meant the interrupted-job
-remap logic below was silently dead code — the file would just still
-say `.queued` from the last real write no matter when the app quit;
-caught by deliberately `kill -9`-ing the app mid-download and inspecting
-the actual JSON on disk, not assumed). Deliberately **not** persisted
-on the frequent per-tick `progressFraction`/`progressETA` writes
-`JobSink` makes during an active download/encode — those aren't
-structural, and persisting on every one would hammer disk I/O many
-times a second. The actual file write happens in a detached `Task`, off
-the main thread.
+`jobs` encodes to `~/Library/Application Support/Grab/queue.json`
+(new territory — everything else persists via `@AppStorage`, a poor fit
+for `[Job]`). Saved on every *structural* change (add/remove/reorder/
+status transition) via `persistQueue()`, including explicitly at the
+moment a job's status flips to `.downloading`/`.converting` — not just
+completion/failure, confirmed necessary by `kill -9`-ing the app
+mid-download and inspecting the on-disk JSON (an earlier version only
+persisted on completion/failure, silently making the interrupted-job
+remap below dead code). Deliberately **not** persisted on the frequent
+per-tick progress writes `JobSink` makes. Write happens in a detached
+`Task`, off the main thread.
 
-On load (`loadPersistedQueue()`, called from a new `AppViewModel.init()`
-— none existed before this): any job persisted as `.downloading`/
-`.converting` is remapped to `.queued` with its progress fields
-cleared — "mark interrupted jobs as needing retry, not complete," per
-spec. Does **not** auto-start processing — matches this app's existing
-pattern of never starting network/CPU work with no user action; the
-user has to add a job or hit Retry. Any read/write failure anywhere
-(missing directory, decode error, anything) falls back silently to an
-empty in-memory queue, exactly the fallback the spec allows.
-
-**Verified for real, not assumed**: launched the app with a real
-2-job queue already added (one real short clip, one deliberately
-invalid video id), `kill -9`'d the process mid-download, and inspected
-the actual `queue.json` on disk — confirmed it showed `"status":
-"downloading"` for the in-flight job and `"status": "queued"` for the
-one still waiting (proving jobs really do process strictly
-sequentially, not in parallel — the second job's on-disk status had
-never been touched). Relaunched and confirmed via a temporary debug
-print at the very top of `ContentView`'s launch `.task` (before
-anything else could run) that the loaded job showed `status: queued,
-frac: nil` and `isProcessingQueue: false` — the exact remap-without-
-auto-resume behavior the spec asks for. Separately let a real 2-job
-queue (one valid, one invalid) run to completion end-to-end: the valid
-job reached `.completed` with a real output file, the invalid one
-reached `.failed` with a real yt-dlp error message ("Video
-unavailable") captured in `errorMessage`, and the queue did not halt
-after the failure — both outcomes visible in the final persisted JSON.
+On load, any job persisted as `.downloading`/`.converting` is remapped
+to `.queued` with progress cleared — does **not** auto-start processing
+(matches this app never starting network/CPU work without user action;
+the user must add a job or hit Retry). Any read/write failure anywhere
+falls back silently to an empty in-memory queue.
 
 ### Selection sheet
 
-`PlaylistSelectionSheet` (`ContentView.swift`): checklist (all entries
-checked by default, each row title + `PlaylistEntry.displayDuration`),
-a live "N of M selected" count, a warning banner when `entries.count >
-25` (verified visually with a real 40-entry mock), the
-`PlaylistFormatPolicy` picker, and mode-specific conversion controls —
-per the spec's literal split, **Basic mode** shows the exact same
-"Editing quality (ProRes)" toggle + tier picker `BasicResolutionSheet`
-already has for a single video (extracted into a new shared
-`ProResOptionsSection` view so it isn't duplicated verbatim — both
-sheets now call the same view); **Advanced mode** shows no extra picker
-at all, just a line noting it uses the conversion settings already
-configured in the main window (verified visually — matches "the format
-policy above" being the only new thing Advanced needed, per the spec).
-"Add to Queue" builds one `Job` per checked entry via `AppViewModel.
-enqueue(entries:settings:)`.
-
-**Verified for real**: fetched a real live 20-item YouTube playlist
-through the actual built app (`--flat-playlist` enumeration, not
-mocked) and confirmed the sheet populated with real titles/durations/
-count; separately verified the ambiguous-URL confirmation dialog and
-the pure-playlist-URL skip-straight-to-sheet path, both through the
-real gate function with real URLs (not simulated), and confirmed a
-plain single-video URL still triggers neither — opens the ordinary
-resolution sheet exactly as before. Screenshotted in both light states
-(Basic sheet with ProRes options, Advanced sheet with the large-
-playlist warning) — same mock-injection-in-`.task`-then-revert pattern
-this file has used throughout its history, reverted before finishing,
-confirmed by a final clean build with no debug/mock code left in the
-diff.
+`PlaylistSelectionSheet`: checklist (all checked by default, title +
+duration per row), live "N of M selected" count, a warning banner above
+25 entries, the `PlaylistFormatPolicy` picker, and mode-specific
+conversion controls — Basic mode shows the same ProRes toggle + tier
+picker as the single-video sheet (extracted into a shared
+`ProResOptionsSection` so it isn't duplicated); Advanced mode shows no
+extra picker, just a note that it uses the main window's already-
+configured conversion settings. "Add to Queue" builds one `Job` per
+checked entry via `AppViewModel.enqueue(entries:settings:)`.
 
 ## Release & distribution
 
 ### How to release a new version (checklist)
 
-The mechanics behind every step here are explained in detail further down
-this section and in "Auto-updates (Sparkle)" above — this is just the
-condensed, do-this-in-order version, specifically so the Sparkle-signing
-step doesn't get forgotten (that was the whole point of adding it here).
 Run from the repo root:
 
 1. **Bump the version** — edit `project.yml`, bump `MARKETING_VERSION`
    *and* `CURRENT_PROJECT_VERSION` to the same new value (both — see
-   "Versioning" below for why they must move together now). Commit that
-   change by itself (`git commit -m "Bump version to X.Y.Z"`).
-2. **Build, sign, and update the feed** — run `./scripts/release.sh`. This
-   one command does all of: `xcodegen generate`, a Release `xcodebuild`,
-   DMG packaging into `build/`, downloading/caching Sparkle's `sign_update`
-   tool if it isn't already cached, EdDSA-signing the DMG (reads the
-   private key from this Mac's Keychain automatically — see "Auto-updates
-   (Sparkle)" above if that fails), and updating + committing + pushing
-   `appcast.xml` for the new version. It prints the exact next two
-   commands (step 3) when it finishes.
-3. **Tag and publish the GitHub release immediately after** — don't let a
-   gap open up here, since step 2 already pushed an `appcast.xml` pointing
-   at a release asset URL that doesn't exist until this step runs:
+   "Auto-updates (Sparkle)" above for why they must move together).
+   Commit that change by itself (`git commit -m "Bump version to
+   X.Y.Z"`).
+2. **Build, sign, and update the feed** — run `./scripts/release.sh`.
+   Does `xcodegen generate`, a Release `xcodebuild`, DMG packaging into
+   `build/`, downloads/caches Sparkle's `sign_update` if needed,
+   EdDSA-signs the DMG (Keychain-backed), and updates+commits+pushes
+   `appcast.xml`. Prints the exact next two commands when it finishes.
+3. **Tag and publish the GitHub release immediately after** — don't let
+   a gap open up, since step 2 already pushed an appcast pointing at a
+   release asset URL that doesn't exist until this step runs:
 
    ```sh
    git tag vX.Y.Z && git push origin vX.Y.Z
    gh release create vX.Y.Z "build/Grab-X.Y.Z.dmg" --title "Grab vX.Y.Z" --notes "..."
    ```
-4. **Verify the feed is actually live** (cheap, worth doing every time):
+4. **Verify the feed is actually live**:
 
    ```sh
    curl -sI "https://github.com/<owner>/<repo>/releases/download/vX.Y.Z/Grab-X.Y.Z.dmg" | head -3
    curl -s "https://raw.githubusercontent.com/<owner>/<repo>/main/appcast.xml" | grep -A2 "<sparkle:shortVersionString>X.Y.Z<"
    ```
 
-   The first command should redirect (not 404); the second should show
-   the new version's entry with a real `sparkle:edSignature`.
+   The first should redirect (not 404); the second should show the new
+   version's entry with a real `sparkle:edSignature`.
 
-That's the whole release process. No separate "remember to sign" step
-exists anymore because `release.sh` won't finish successfully without
-doing it — the signing happens before the script ever touches git.
+No separate "remember to sign" step exists — `release.sh` won't finish
+without doing it.
 
 **Tone for release notes / commit messages written during a release**:
-sound like a nonchalant coder, not marketing copy. Lowercase-ish, dry,
-no exclamation points, no "🎉 excited to announce," no bullet-pointed
-feature-marketing language. Something like "added sparkle auto-updates,
-should just work now" rather than "Introducing seamless auto-updates!"
-— casual and a little understated, like a commit message to yourself,
-not a press release. Applies to the `gh release create --notes` text and
-the version-bump/appcast commit messages in this workflow.
+nonchalant coder, not marketing copy. Lowercase-ish, dry, no exclamation
+points, no "🎉 excited to announce," no feature-marketing bullet
+language — something like "added sparkle auto-updates, should just work
+now," like a commit message to yourself.
 
-**This is a git repo now** (it wasn't for the first two sessions of work —
-initialized this session, `main` branch, no `.git` history prior to the
-"Initial commit" that captured the pre-existing app as a baseline).
-`Grab.xcodeproj/` is gitignored (regenerated from `project.yml` by
-`xcodegen generate`, per the "do not hand-edit" note at the top of this
-file — no reason to track a generated artifact).
+**Distribution decision**: unsigned/ad-hoc (`CODE_SIGN_IDENTITY: "-"`),
+no paid Apple Developer ID, no notarization — an explicit user choice,
+not a default. Packaged as a DMG via `scripts/release.sh` for GitHub
+Releases.
 
-**Distribution decision**: stays unsigned/ad-hoc (`CODE_SIGN_IDENTITY:
-"-"`), no paid Apple Developer ID, no notarization — this was an explicit
-user choice (asked directly), not a default/oversight. Packaged as a DMG
-via `scripts/release.sh` for GitHub Releases.
+**GitHub repo stays public** (github.com/Tz4i/grab, MIT): `SUFeedURL`
+points at `raw.githubusercontent.com`, and DMG enclosure URLs point at
+GitHub release assets — both 404 unauthenticated on a private repo. If
+this ever needs to go private, Sparkle's feed fetch would fail silently
+(network failure, not a parse error) — easy to miss for a while.
 
-**GitHub repo visibility**: started **private**, flipped to **public**
-partway through an early session (`gh repo edit --visibility public
---accept-visibility-change-consequences`, confirmed with the user first),
-originally because the old `AppUpdateService` app-update check needed
-unauthenticated GitHub API access to releases, which doesn't work on a
-private repo. That specific check is gone now (see "Auto-updates
-(Sparkle)" above), but **the repo still has to stay public for the same
-underlying reason, just via different traffic**: `SUFeedURL` points at
-`raw.githubusercontent.com`, and the DMG enclosure URLs point at GitHub
-release assets — both 404 unauthenticated on a private repo exactly like
-the old REST API call did. Already under MIT (`LICENSE` was added in
-anticipation of this before the flip even happened). If this repo ever
-needs to go private again, Sparkle's checks would then silently fail to
-fetch the feed at all (network failure, not a parse error) — unlike the
-old check, this wouldn't even fail quietly-by-design, it'd just look like
-"the internet is down" to Sparkle every time, so that regression could
-easily go unnoticed for a while.
+**Gatekeeper on an unsigned/ad-hoc DMG**: this dev machine has
+Gatekeeper assessments fully disabled (`spctl --status`), so a local
+`spctl -a -vv` check isn't representative of a real user's Mac. What was
+directly confirmed: tagging a copy with `com.apple.quarantine` and
+clearing it with `/usr/bin/xattr -rc <path>.app` genuinely removes the
+flag. This machine also has a `pip`-installed `xattr` shadowing
+`/usr/bin/xattr` on `PATH` that silently doesn't support `-r` —
+`README.md` calls out the absolute path explicitly for this reason.
 
-**Release history**: `v1.0.0` (first release, ad-hoc DMG, established the
-process) → `v1.1.0` (dependency setup screen + disclaimers, yt-dlp/app
-update checking, H.264 conversion mode, window chrome translucency — see
-their respective sections above) → `v1.1.1` (patch: log-pane UI-overflow
-fix + disk-full retry-loop fix — see "Log buffer capping/throttling" and
-"Retry safety / disk-space handling" above; no new user-facing features,
-hence a patch bump rather than minor) → `v1.2.0` (minor: video metadata
-display in both modes + the resolution sheet, Basic mode's ProRes tier
-picker and delete-source-after-conversion toggle, "Best available"
-pre-selected by default, per-mode window sizing — see "Video metadata
-display" and "Basic / Advanced mode" above; real new user-facing
-features, hence minor rather than patch) → `v1.3.0` (minor: the
-SectionCard visual-polish pass — see "Visual polish pass" above — plus
-its two follow-up fixes, the content-area wallpaper/backdrop color-bleed
-fix and Advanced mode's ProRes Tier default correction; a visible
-redesign of the main window, not just a bug fix, hence minor rather than
-patch despite including fixes) → `v1.4.0` (minor: Sparkle in-app
-auto-updates — see "Auto-updates (Sparkle)" above; a real new
-user-facing feature, hence minor). The version-bump-then-release
-workflow (`project.yml`'s `MARKETING_VERSION` → `scripts/release.sh` →
-`git tag`/`gh release create`) was validated a sixth time end-to-end for
-v1.4.0, now with the Sparkle-signing step folded into `release.sh`
-itself — the whole pipeline ran for real, not just individually
-spot-checked pieces: `sign_update` produced a real signature for the
-real packaged `Grab-1.4.0.dmg`, `update_appcast.py` inserted a real new
-entry above the existing v1.3.0 one, `appcast.xml` was committed and
-pushed automatically by the script, and after `gh release create`
-finished, both the DMG URL (`curl -sI`, real `302` redirect to the
-actual asset, not a `404`) and the raw appcast URL (`curl`, showing the
-new entry with a real `sparkle:edSignature`) were confirmed live —
-confirming the single-source-of-truth versioning fix from v1.0.0 (see
-"Versioning" below) holds up across repeated releases, and that the
-Sparkle pipeline added this session actually works end-to-end, not just
-in isolated pieces. **Not** verified: a real older Sparkle-enabled build
-actually detecting and installing this update through Sparkle's UI —
-v1.4.0 is the *first* version that ships with Sparkle at all, so no
-older build exists that could have auto-updated *to* it; the next
-release will be the first real test of that specific path.
+**Versioning**: single source of truth is `MARKETING_VERSION` in
+`project.yml` (bump this for a release; `CURRENT_PROJECT_VERSION` must
+move with it, see above). `Info.plist`'s version keys substitute from
+these via `$(MARKETING_VERSION)`/`$(CURRENT_PROJECT_VERSION)` rather
+than separate literal strings.
 
-**A commit gap existed between v1.1.1 and v1.2.0**: several sessions'
-worth of work (Basic mode's ProRes tier picker/delete-source toggle,
-"Best available" pre-selection, per-mode window sizing, then the video
-metadata feature) had accumulated as uncommitted changes in the working
-tree — `git status` showed them all as modified/untracked at once, with
-no way to tell which session touched what after the fact. All of it was
-already fully documented in this file from when it was originally built,
-and the working tree built and ran correctly, so it was committed as one
-combined commit rather than split apart. If this happens again, don't try
-to reconstruct a per-session commit history retroactively — just verify
-the working tree still builds/behaves as documented and commit it as-is;
-CLAUDE.md's own sectioning is the record of what changed and why, not the
-commit boundaries.
+**`scripts/release.sh`** mechanics: `xcodegen generate` → Release
+`xcodebuild` → stage `Grab.app` + an `/Applications` symlink →
+`hdiutil create -format UDZO` → `build/Grab-<version>.dmg`. Locates
+Xcode via the same `mdfind` lookup as the manual build instructions
+above rather than a hardcoded path. `build/` is gitignored.
 
-**Dual-arch Homebrew support**: `Tools.swift` used to hardcode
-`/opt/homebrew/bin` (Apple-Silicon-only) for `yt-dlp`/`ffmpeg`/`ffprobe`/
-`brew`. Now searches `/opt/homebrew/bin` then `/usr/local/bin` (Intel) via
-`Tool.searchPrefixes`, resolved once per launch. `YTDLPService`'s
-`--ffmpeg-location` and `ProcessRunner`'s injected `PATH` both derive from
-the same resolution instead of a separate hardcoded path — verified via a
-standalone harness (real resolution on this Apple-Silicon machine) plus an
-isolated algorithm test proving the fallthrough-to-second-prefix path
-works, since this machine can't produce a real "Intel Homebrew missing
-from /opt/homebrew" scenario to test against directly.
+**Dual-arch Homebrew support**: `Tool.searchPrefixes` (see "Binaries"
+above) covers both Apple Silicon and Intel; `YTDLPService`'s
+`--ffmpeg-location` and `ProcessRunner`'s injected `PATH` both derive
+from the same resolution.
 
-**App icon**: rounded-square indigo/purple gradient, downward arrow
-feeding into a play triangle (download + video in one glyph), generated at
-1024px via a throwaway CoreGraphics/AppKit script (not checked in — icon
-generation isn't a repeatable build step, only the resulting PNGs in
-`Grab/Resources/Assets.xcassets/AppIcon.appiconset/` are). Full mac idiom
-size set (16 through 512, 1x/2x) via `sips`. Wired in via
-`ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon` in `project.yml`, not a
-manually-placed `.icns` — confirmed a real `AppIcon.icns` + `Assets.car`
-land in the built app's `Contents/Resources`.
+**Release history** (each a real, live-verified release — DMG signed,
+appcast entry pushed, DMG URL and raw appcast URL confirmed live via
+`curl` after `gh release create`): v1.0.0 (first release, established
+the process) → v1.1.0 (dependency setup screen, yt-dlp/app update
+checking, H.264 mode, window chrome translucency) → v1.1.1 (patch:
+log-pane overflow fix, disk-full retry-loop fix) → v1.2.0 (video
+metadata display, Basic mode ProRes tier picker + delete-source toggle,
+per-mode window sizing) → v1.3.0 (SectionCard visual-polish pass + its
+two follow-up fixes) → v1.4.0 (Sparkle in-app auto-updates — first
+version with the signing pipeline folded into `release.sh`) → v1.5.0
+(clipboard paste-and-fetch button, Basic-mode 4K delete-source fix,
+window-clipping fixes) → v1.6.0 (playlist support — detection/
+disambiguation, flat-playlist enumeration, selection sheet, sequential
+job queue with persistence — the largest single feature shipped,
+"the final v1 feature").
 
-**Versioning**: `CFBundleShortVersionString`/`CFBundleVersion` in the
-`Info.plist` properties block of `project.yml` used to be separate literal
-strings from `MARKETING_VERSION`/`CURRENT_PROJECT_VERSION` in the settings
-block — two places that had to be bumped in lockstep by hand, an easy way
-to ship a build with a stale version string. Now `$(MARKETING_VERSION)`/
-`$(CURRENT_PROJECT_VERSION)` (Xcode does the substitution on the static
-Info.plist at build time regardless of `GENERATE_INFOPLIST_FILE: false` —
-`CFBundleExecutable`/`CFBundleIdentifier` already relied on this same
-substitution before this session). Single source of truth is now
-`MARKETING_VERSION` in `project.yml`; bump only that for a release.
-`scripts/release.sh` reads it from there to name the DMG.
+**A commit gap existed between v1.1.1 and v1.2.0** (several sessions'
+uncommitted work landed as one combined commit, since there was no way
+to reconstruct per-session boundaries after the fact) — if this happens
+again, don't try to reconstruct history retroactively; verify the
+working tree still builds/behaves as documented and commit as-is.
+CLAUDE.md's own sectioning is the record of what changed and why, not
+the commit boundaries.
 
-**Update, once Sparkle was added**: "bump only `MARKETING_VERSION`" is no
-longer quite true. `CURRENT_PROJECT_VERSION` must now be bumped to match
-it at every release too — see "Auto-updates (Sparkle)" above for why
-(short version: Sparkle's update comparator relies on `CFBundleVersion`
-actually changing, and it had been hardcoded `"1"` forever since nothing
-ever compared it before Sparkle existed). Two values to bump in lockstep
-again, but for a real reason this time, not an oversight like the one
-this section originally fixed.
-
-**`scripts/release.sh`**: `xcodegen generate` → Release `xcodebuild` →
-stage `Grab.app` + an `/Applications` symlink → `hdiutil create -format
-UDZO` → `build/Grab-<version>.dmg`. Locates a full Xcode install via the
-same `mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'"` lookup
-as the manual build instructions above, rather than hardcoding a path —
-deliberate, since that path has already moved once this session. `build/`
-is gitignored.
-
-**Gatekeeper on an unsigned/ad-hoc DMG — verified with a real caveat**:
-this dev machine has Gatekeeper assessments fully disabled
-(`spctl --status` → "assessments disabled"), so `spctl -a -vv` against a
-quarantined copy of the built app returned "accepted" here — **that is
-not representative of a real user's Mac** and was not treated as
-verification that the app opens cleanly elsewhere. What *was* verified
-directly: manually tagging a copy with `com.apple.quarantine` (mimicking a
-browser download) and then clearing it with `/usr/bin/xattr -rc
-<path>.app` does remove the flag (confirmed via `xattr -p` erroring "No
-such xattr" afterward) — this is the one workaround documented in
-`README.md` that's mechanically confirmed rather than assumed from Apple's
-docs. Also hit and noted for future sessions: this machine has a
-`pip`-installed `xattr` (`/Library/Frameworks/Python.framework/.../bin/xattr`)
-shadowing `/usr/bin/xattr` on `PATH`, and the Python one doesn't support
-`-r` — silently different flag set, not a typo. `README.md`'s instructions
-call out `/usr/bin/xattr` explicitly for this reason. The System
-Settings → Privacy & Security → "Open Anyway" path (also documented) is
-standard, current Apple-documented behavior but *wasn't* visually
-confirmed this session, for the same Gatekeeper-disabled-on-this-machine
-reason — say so if asked, don't imply it was screenshotted.
+**App icon**: rounded-square indigo/purple gradient, downward arrow into
+a play triangle. Generated at 1024px via a throwaway (not checked in)
+CoreGraphics/AppKit script; full mac idiom size set via `sips`. Wired
+via `ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon` in `project.yml`.
 
 ## Things intentionally NOT done
 
-- No unit test target in the Xcode project itself — verification so far
-  has been via the standalone harness pattern above, run manually. If
-  asked to add real test coverage, a Swift Testing/XCTest target wired
-  into the scheme would be the way to formalize this.
-- No code signing / notarization — ad-hoc signed only, an explicit user
-  decision this session (not a default) — see "Release & distribution"
-  above. Revisit if the user later gets a paid Apple Developer ID.
-- No security-scoped bookmarks for the output folder — sandbox is off, so
-  the plain `@AppStorage`-persisted path in `ContentView` is sufficient.
-- No in-app auto-update/self-replace — the app-update check only links to
-  the GitHub release page (see "Update checking"). Deliberate: unsigned/
-  ad-hoc means a self-replaced copy would be freshly quarantined by
-  Gatekeeper on every update, worse than a manual download. Revisit only
-  alongside the code-signing decision above, not independently.
+- No unit test target in the Xcode project itself — verification has
+  been via the standalone harness pattern above, run manually. If asked
+  to add real test coverage, a Swift Testing/XCTest target wired into
+  the scheme would be the way to formalize this.
+- No code signing / notarization — ad-hoc only, an explicit user
+  decision (see "Release & distribution" above). Revisit if the user
+  later gets a paid Apple Developer ID.
+- No security-scoped bookmarks for the output folder — sandbox is off,
+  so the plain `@AppStorage`-persisted path is sufficient.
+- ~~No in-app auto-update/self-replace~~ — superseded: Sparkle (v1.4.0)
+  does exactly this now. Left crossed out rather than deleted so a
+  future session doesn't wonder whether this list is exhaustive.
+- No unit test target for the playlist queue specifically, beyond the
+  standalone-harness pattern — a real concurrency/ordering edge case
+  (rapid retry/cancel/remove interleaving on the same job) would benefit
+  from real test coverage if the queue grows more complex.
